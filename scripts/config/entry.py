@@ -3,40 +3,11 @@
 import fcntl
 import hashlib
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from project_config import ConfigError, tomllib
-
-
-def clean(root, *, entire, native):
-    build = root / "build"
-    if build.exists():
-        for directory in build.iterdir():
-            if directory.is_dir() and (directory / ".flow-stage").is_file():
-                shutil.rmtree(directory)
-        shutil.rmtree(build / "generated", ignore_errors=True)
-    manifest = root / "Bender.yml"
-    if manifest.is_file() and manifest.read_text().startswith(
-        "# Generated from Project.toml;"
-    ):
-        manifest.unlink()
-    if entire:
-        shutil.rmtree(build, ignore_errors=True)
-        if not native:
-            (root / "Project.toml").unlink(missing_ok=True)
-    if entire:
-        print(
-            "[DISTCLEAN] build/ removed; package metadata preserved"
-            if native
-            else "[DISTCLEAN] build/ and Project.toml removed"
-        )
-    else:
-        print(
-            "[CLEAN] Flow outputs removed; configuration, environment and lock preserved"
-        )
+from project_config import ConfigError
 
 
 def main():
@@ -57,11 +28,6 @@ def main():
             != os.environ["PROJECT_BOOTSTRAP_LOCK"]
         ):
             raise ConfigError("Dependency lock changed after bootstrap")
-        if action in {"clean", "distclean"}:
-            with (root / "Project.toml").open("rb") as stream:
-                native = "sources" not in tomllib.load(stream)["bender"]
-            clean(root, entire=action == "distclean", native=native)
-            return
         subprocess.run(
             ["bash", str(Path(__file__).with_name("setup_venv.sh"))],
             env=environment,

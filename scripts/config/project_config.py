@@ -148,7 +148,9 @@ def load_config(config_path, project_root):
     design = {"top": top, "parameters": parameters}
     if parameters and not top:
         raise ConfigError("design.parameters requires design.top")
-    bender = require_table(raw, "bender")
+    bender = raw.get("bender", {})
+    if not isinstance(bender, dict):
+        raise ConfigError("bender: expected a table")
     native = "sources" not in bender
     if native:
         reject_unknown(bender, {"version"}, "bender")
@@ -171,7 +173,8 @@ def load_config(config_path, project_root):
             raise ConfigError("bender.sources: expected native Bender source groups")
         if not isinstance(bender.get("dependencies", {}), dict):
             raise ConfigError("bender.dependencies: expected a table")
-    require_string(bender, "version", "bender")
+    if not native or "version" in bender:
+        require_string(bender, "version", "bender")
     build = raw.get("build", {})
     reject_unknown(build, {"jobs", "technology", "reproducible"}, "build")
     build = {
@@ -181,6 +184,8 @@ def load_config(config_path, project_root):
         if "reproducible" in build
         else False,
     }
+    if build["reproducible"] and not bender.get("version"):
+        raise ConfigError("Reproducible builds require bender.version")
     environment = raw.get("environment", {})
     reject_unknown(
         environment,

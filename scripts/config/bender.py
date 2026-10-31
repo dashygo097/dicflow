@@ -161,25 +161,21 @@ def resolve(config, root, update=False, generated_sources=()):
     if update:
         raise ConfigError("Dependency updates belong to the Make bootstrap entry")
     actual = subprocess.check_output(["bender", "--version"], text=True).strip()
-    if actual != "bender " + config["bender"]["version"]:
+    version = config["bender"].get("version")
+    if version and actual != "bender " + version:
         raise ConfigError("Bender version does not match Project.toml")
     lock = root / "Bender.lock"
     native = config["bender"].get("_native", False)
-    if native:
-        declaration = {
-            "native_manifest_sha256": hashlib.sha256(
-                (root / "Bender.yml").read_bytes()
-            ).hexdigest(),
-            "bender_version": config["bender"]["version"],
-        }
-    else:
+    if not lock.is_file():
+        raise ConfigError("Bender.lock is missing; run make deps-update")
+    if not native:
         declaration = {
             "dependencies": config["bender"].get("dependencies", {}),
             "bender_version": config["bender"]["version"],
         }
-    header = LOCK_HEADER + digest(declaration) + "\n"
-    if not lock.is_file() or not lock.read_text().startswith(header):
-        raise ConfigError("Dependency declaration changed; run make deps-update")
+        header = LOCK_HEADER + digest(declaration) + "\n"
+        if not lock.read_text().startswith(header):
+            raise ConfigError("Dependency declaration changed; run make deps-update")
     before = lock.read_bytes()
     if native:
         if generated_sources:
