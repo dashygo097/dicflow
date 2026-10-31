@@ -164,20 +164,30 @@ def resolve(config, root, update=False, generated_sources=()):
     if actual != "bender " + config["bender"]["version"]:
         raise ConfigError("Bender version does not match Project.toml")
     lock = root / "Bender.lock"
-    header = (
-        LOCK_HEADER
-        + digest(
-            {
-                "dependencies": config["bender"].get("dependencies", {}),
-                "bender_version": config["bender"]["version"],
-            }
-        )
-        + "\n"
-    )
+    native = config["bender"].get("_native", False)
+    if native:
+        declaration = {
+            "native_manifest_sha256": hashlib.sha256(
+                (root / "Bender.yml").read_bytes()
+            ).hexdigest(),
+            "bender_version": config["bender"]["version"],
+        }
+    else:
+        declaration = {
+            "dependencies": config["bender"].get("dependencies", {}),
+            "bender_version": config["bender"]["version"],
+        }
+    header = LOCK_HEADER + digest(declaration) + "\n"
     if not lock.is_file() or not lock.read_text().startswith(header):
         raise ConfigError("Dependency declaration changed; run make deps-update")
     before = lock.read_bytes()
-    write_manifest(config, root, generated_sources=generated_sources)
+    if native:
+        if generated_sources:
+            raise ConfigError(
+                "Native packages must declare generated HDL in their Bender.yml"
+            )
+    else:
+        write_manifest(config, root, generated_sources=generated_sources)
     effective = json.loads(command(root, "config"))
     if effective.get("overrides"):
         raise ConfigError("Bender overrides bypass Project.toml")

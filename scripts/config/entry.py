@@ -8,10 +8,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from project_config import ConfigError
+from project_config import ConfigError, tomllib
 
 
-def clean(root, *, entire):
+def clean(root, *, entire, native):
     build = root / "build"
     if build.exists():
         for directory in build.iterdir():
@@ -25,12 +25,18 @@ def clean(root, *, entire):
         manifest.unlink()
     if entire:
         shutil.rmtree(build, ignore_errors=True)
-        (root / "Project.toml").unlink(missing_ok=True)
-    print(
-        "[DISTCLEAN] build/ and Project.toml removed"
-        if entire
-        else "[CLEAN] Flow outputs removed; environment and lock preserved"
-    )
+        if not native:
+            (root / "Project.toml").unlink(missing_ok=True)
+    if entire:
+        print(
+            "[DISTCLEAN] build/ removed; package metadata preserved"
+            if native
+            else "[DISTCLEAN] build/ and Project.toml removed"
+        )
+    else:
+        print(
+            "[CLEAN] Flow outputs removed; configuration, environment and lock preserved"
+        )
 
 
 def main():
@@ -52,7 +58,9 @@ def main():
         ):
             raise ConfigError("Dependency lock changed after bootstrap")
         if action in {"clean", "distclean"}:
-            clean(root, entire=action == "distclean")
+            with (root / "Project.toml").open("rb") as stream:
+                native = "sources" not in tomllib.load(stream)["bender"]
+            clean(root, entire=action == "distclean", native=native)
             return
         subprocess.run(
             ["bash", str(Path(__file__).with_name("setup_venv.sh"))],
