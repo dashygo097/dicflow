@@ -58,19 +58,11 @@ def make_command(argv):
 
 
 def check_framework(config):
-    if os.environ.get("PROJECT_BOOTSTRAP_API", "1") != "1":
-        raise ConfigError(
-            "Unsupported project bootstrap API; update the starter bootstrap"
-        )
-    selected = config.get("framework", {}).get("package")
-    active = os.environ.get("PROJECT_FRAMEWORK_PACKAGE")
-    directory = str(Path(__file__).resolve().parents[2])
-    if selected != active or (
-        selected and os.environ.get("PROJECT_FRAMEWORK_ROOT") != directory
-    ):
-        raise ConfigError(
-            "Framework selection changed; use make to resolve the locked framework"
-        )
+    if os.environ.get("PROJECT_BOOTSTRAP_API") != "2":
+        raise ConfigError("Use the bootstrap API 2 Make entry")
+    expected = str(Path(__file__).resolve().parents[2])
+    if os.environ.get("PROJECT_FRAMEWORK_ROOT") != expected:
+        raise ConfigError("Framework checkout changed after bootstrap")
 
 
 def synchronize_outputs(directory, contents):
@@ -539,7 +531,7 @@ def prepare(config, update=False, stages=None):
             "packages": package_state,
             "flows": {key: value["input_digest"] for key, value in snapshots.items()},
             "framework": {
-                "package": config.get("framework", {}).get("package"),
+                "package": "dicflow",
                 "path": str(Path(__file__).resolve().parents[2]),
             },
         },
@@ -859,7 +851,7 @@ def main():
                 stages = []
             else:
                 stages = [goal.removesuffix("-run") for goal in goals]
-            updated = os.environ.get("PROJECT_BOOTSTRAP_UPDATED_LOCK")
+            updated = os.environ.get("PROJECT_BOOTSTRAP_LOCK")
             if updated and sha256(ROOT / "Bender.lock") != updated:
                 raise ConfigError(
                     "Dependency lock changed after framework bootstrap; rerun make"

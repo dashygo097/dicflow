@@ -1,7 +1,5 @@
-/Project.toml
 /build/
 /.bender/
 __pycache__/
-.ruff_cache/
 *.log
 .DS_Store

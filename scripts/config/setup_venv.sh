@@ -3,8 +3,9 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-PROJECT_ROOT=$(cd "${SCRIPT_DIR}/../.." && pwd)
-source "${PROJECT_ROOT}/scripts/common/check_env.sh"
+FRAMEWORK_ROOT=$(cd "${SCRIPT_DIR}/../.." && pwd)
+PROJECT_ROOT=${PROJECT_ROOT:-${FRAMEWORK_ROOT}}
+source "${FRAMEWORK_ROOT}/scripts/common/check_env.sh"
 
 PYTHON_BIN=${PYTHON_BIN:-python3}
 VENV_DIR=${PROJECT_VENV_DIR:-${PROJECT_ROOT}/build/.venv}
@@ -13,16 +14,8 @@ REQUIREMENTS=${SCRIPT_DIR}/requirements.txt
 require_file "${REQUIREMENTS}"
 
 if [[ -e "${VENV_DIR}" && ! -x "${VENV_DIR}/bin/python" ]]; then
-  case "${VENV_DIR}" in
-    "${PROJECT_ROOT}"/build/.venv)
-      echo "[VENV] Removing incomplete generated environment: ${VENV_DIR}"
-      rm -rf -- "${VENV_DIR}"
-      ;;
-    *)
-      echo "ERROR: refusing to replace virtual environment outside the expected build path: ${VENV_DIR}" >&2
-      exit 1
-      ;;
-  esac
+  echo "ERROR: existing project environment cannot be executed: ${VENV_DIR}; refusing to replace it" >&2
+  exit 1
 fi
 
 if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
