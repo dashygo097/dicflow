@@ -1,0 +1,10 @@
+# Generated from Project.toml; do not edit.
+{
+  "package": {
+    "name": "dicflow"
+  },
+  "frozen": true,
+  "dependencies": {},
+  "export_include_dirs": [],
+  "sources": []
+}

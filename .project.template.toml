@@ -1,0 +1,6 @@
+schema_version = 7
+
+[bender]
+name = "dicflow"
+version = "0.32.1"
+sources = []
