@@ -116,7 +116,7 @@ def load_config(config_path, project_root):
         )
     if "framework" in raw:
         raise ConfigError(
-            "Remove [framework]; dicflow is selected by bender.dependencies.dicflow"
+            "Remove [framework]; declare dicflow as a dependency in Bender.yml"
         )
     core = {
         "schema_version",
@@ -133,7 +133,7 @@ def load_config(config_path, project_root):
         if not IDENTIFIER.fullmatch(name) or not isinstance(settings, dict):
             raise ConfigError(f"{name}: expected a named configuration table")
     design = raw.get("design", {})
-    reject_unknown(design, {"top", "parameters"}, "design")
+    reject_unknown(design, {"top", "parameters", "sources"}, "design")
     top = design.get("top", "")
     if not isinstance(top, str) or (top and not IDENTIFIER.fullmatch(top)):
         raise ConfigError("design.top: invalid module identifier")
@@ -145,36 +145,20 @@ def load_config(config_path, project_root):
         for name, value in parameters.items()
     ):
         raise ConfigError("design.parameters: expected named scalar values")
-    design = {"top": top, "parameters": parameters}
+    sources = design.get("sources", [])
+    if not isinstance(sources, list):
+        raise ConfigError("design.sources: expected Bender source groups")
+    design = {"top": top, "parameters": parameters, "sources": sources}
     if parameters and not top:
         raise ConfigError("design.parameters requires design.top")
     bender = raw.get("bender", {})
     if not isinstance(bender, dict):
         raise ConfigError("bender: expected a table")
-    native = "sources" not in bender
-    if native:
-        reject_unknown(bender, {"version"}, "bender")
-        manifest = project_root / "Bender.yml"
-        if not manifest.is_file() or manifest.read_text().startswith(
-            "# Generated from Project.toml;"
-        ):
-            raise ConfigError("Native package flows require a native Bender.yml")
-        bender = {**bender, "_native": True}
-    else:
-        reject_unknown(
-            bender,
-            {"name", "version", "sources", "dependencies", "export_include_dirs"},
-            "bender",
-        )
-        name = require_string(bender, "name", "bender")
-        if not IDENTIFIER.fullmatch(name):
-            raise ConfigError("bender.name: invalid identifier")
-        if not isinstance(bender.get("sources"), list):
-            raise ConfigError("bender.sources: expected native Bender source groups")
-        if not isinstance(bender.get("dependencies", {}), dict):
-            raise ConfigError("bender.dependencies: expected a table")
-    if not native or "version" in bender:
+    reject_unknown(bender, {"version"}, "bender")
+    if "version" in bender:
         require_string(bender, "version", "bender")
+    if not (project_root / "Bender.yml").is_file():
+        raise ConfigError("Dependencies must be declared in the repository Bender.yml")
     build = raw.get("build", {})
     reject_unknown(build, {"jobs", "technology", "reproducible"}, "build")
     build = {

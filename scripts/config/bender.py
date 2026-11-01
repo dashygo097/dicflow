@@ -1,4 +1,4 @@
-"""Runtime native Bender projection and exports, after cold bootstrap."""
+"""Locked dependency resolution and disposable project compilation views."""
 
 import hashlib
 import json
@@ -8,14 +8,6 @@ import subprocess
 from pathlib import Path
 
 from project_config import ConfigError, atomic_write
-
-LOCK_HEADER = "# Project dependency declaration SHA256: "
-
-
-def digest(value):
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
 
 
 def command(root, *arguments):
@@ -66,26 +58,32 @@ def source(root, value):
     return result
 
 
-def manifest(config, root, frozen=True, generated_sources=()):
-    settings = config["bender"]
-    # Bender resolves project paths relative to its manifest. Keeping native
-    # declarations relative also makes versioned library manifests relocatable.
-    return {
-        "package": {"name": settings["name"]},
-        "frozen": frozen,
-        "dependencies": settings.get("dependencies", {}),
-        "export_include_dirs": settings.get("export_include_dirs", []),
-        "sources": [*generated_sources, *settings["sources"]],
+def compilation_root(config, root, targets, generated_sources):
+    project_sources = config["design"]["sources"]
+    if not project_sources and not generated_sources:
+        return root
+    arguments = [part for target in targets for part in ("-t", target)]
+    dependencies = json.loads(command(root, "sources", "-f", *arguments))
+    # These groups are already resolved by the root's locked Bender graph. The
+    # compilation view has no dependencies and cannot resolve newer revisions.
+    groups = [
+        {key: group[key] for key in ("files", "include_dirs", "defines", "independent")}
+        for group in dependencies
+    ]
+    identity = hashlib.sha256(json.dumps(sorted(set(targets))).encode()).hexdigest()[:12]
+    directory = root / "build/generated/bender" / identity
+    manifest = {
+        "package": {"name": "dicflow_build"},
+        "frozen": True,
+        "sources": [
+            *groups,
+            *generated_sources,
+            *(source(root, group) for group in project_sources),
+        ],
     }
-
-
-def write_manifest(config, root, frozen=True, generated_sources=()):
-    content = "# Generated from Project.toml; do not edit.\n"
-    # JSON is a YAML subset, eliminating a second serializer/dependency.
-    content += (
-        json.dumps(manifest(config, root, frozen, generated_sources), indent=2) + "\n"
-    )
-    atomic_write(root / "Bender.yml", content)
+    atomic_write(directory / "Bender.yml", json.dumps(manifest, indent=2) + "\n")
+    atomic_write(directory / "Bender.lock", "packages: {}\n")
+    return directory
 
 
 def sources(root, targets):
@@ -157,7 +155,7 @@ def packages(root, reproducible):
     return result
 
 
-def resolve(config, root, update=False, generated_sources=()):
+def resolve(config, root, update=False):
     if update:
         raise ConfigError("Dependency updates belong to the Make bootstrap entry")
     actual = subprocess.check_output(["bender", "--version"], text=True).strip()
@@ -165,28 +163,12 @@ def resolve(config, root, update=False, generated_sources=()):
     if version and actual != "bender " + version:
         raise ConfigError("Bender version does not match Project.toml")
     lock = root / "Bender.lock"
-    native = config["bender"].get("_native", False)
     if not lock.is_file():
         raise ConfigError("Bender.lock is missing; run make deps-update")
-    if not native:
-        declaration = {
-            "dependencies": config["bender"].get("dependencies", {}),
-            "bender_version": config["bender"]["version"],
-        }
-        header = LOCK_HEADER + digest(declaration) + "\n"
-        if not lock.read_text().startswith(header):
-            raise ConfigError("Dependency declaration changed; run make deps-update")
     before = lock.read_bytes()
-    if native:
-        if generated_sources:
-            raise ConfigError(
-                "Native packages must declare generated HDL in their Bender.yml"
-            )
-    else:
-        write_manifest(config, root, generated_sources=generated_sources)
     effective = json.loads(command(root, "config"))
     if effective.get("overrides"):
-        raise ConfigError("Bender overrides bypass Project.toml")
+        raise ConfigError("Bender overrides bypass the locked dependency graph")
     command(root, "checkout")
     if lock.read_bytes() != before:
         atomic_write(lock, before.decode())

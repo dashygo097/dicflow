@@ -363,7 +363,7 @@ def prepare(config, update=False, stages=None):
             generated[name] = content
     synchronize_outputs(GENERATED, generated)
     # Backend-generated HDL must exist before Bender resolves/globs sources.
-    provenance = bender.resolve(config, ROOT, update, generated_sources=source_groups)
+    provenance = bender.resolve(config, ROOT, update)
     package_state = bender.packages(ROOT, config["build"]["reproducible"])
     effective_environment = {
         name: os.environ.get(name)
@@ -390,9 +390,14 @@ def prepare(config, update=False, stages=None):
         directory = GENERATED / "flows" / entry["id"]
         directory.mkdir(parents=True, exist_ok=True)
         active_targets = targets_for(config, entry)
-        groups = bender.sources(ROOT, active_targets) if backend["format"] else []
+        compilation_root = (
+            bender.compilation_root(config, ROOT, active_targets, source_groups)
+            if backend["format"]
+            else ROOT
+        )
+        groups = bender.sources(compilation_root, active_targets) if backend["format"] else []
         export = (
-            bender.export(ROOT, active_targets, backend["format"])
+            bender.export(compilation_root, active_targets, backend["format"])
             if backend["format"]
             else ""
         )
@@ -467,7 +472,7 @@ def prepare(config, update=False, stages=None):
                 for path in (directory / name for name in exports)
             },
         }
-        snapshot["input_digest"] = bender.digest(snapshot)
+        snapshot["input_digest"] = config_digest(snapshot)
         snapshot_path = directory / "inputs.json"
         write_json(snapshot_path, snapshot)
         snapshots[entry["id"]] = snapshot
