@@ -395,7 +395,11 @@ def prepare(config, update=False, stages=None):
             if backend["format"]
             else ROOT
         )
-        groups = bender.sources(compilation_root, active_targets) if backend["format"] else []
+        groups = (
+            bender.sources(compilation_root, active_targets)
+            if backend["format"]
+            else []
+        )
         export = (
             bender.export(compilation_root, active_targets, backend["format"])
             if backend["format"]

@@ -70,7 +70,9 @@ def compilation_root(config, root, targets, generated_sources):
         {key: group[key] for key in ("files", "include_dirs", "defines", "independent")}
         for group in dependencies
     ]
-    identity = hashlib.sha256(json.dumps(sorted(set(targets))).encode()).hexdigest()[:12]
+    identity = hashlib.sha256(json.dumps(sorted(set(targets))).encode()).hexdigest()[
+        :12
+    ]
     directory = root / "build/generated/bender" / identity
     manifest = {
         "package": {"name": "dicflow_build"},
