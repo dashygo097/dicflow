@@ -23,7 +23,7 @@ BACKEND = {
     "run_after_build": True,
     "preserve_runs": True,
     "runtime_options": RUNTIME_OPTIONS,
-    "tracked_environment": ["VCS_HOME", "VCS_TARGET_ARCH"],
+    "tracked_environment": ["VCS_HOME", "VCS_TARGET_ARCH", "VCS_UVM_HOME"],
     "run_outputs": ["{reports}/summary.json", "{reports}/junit.xml"],
     "commands": [
         ["mkdir", "-p", "{work}/simulator"],

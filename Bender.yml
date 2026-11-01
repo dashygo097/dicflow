@@ -5,3 +5,6 @@ sources:
   - target: verify
     files:
       - rtl/dicflow_verify_pkg.sv
+  - target: all(verify, uvm)
+    files:
+      - rtl/dicflow_uvm_pkg.sv
