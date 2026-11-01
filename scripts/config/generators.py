@@ -8,9 +8,11 @@ generators without exposing implementation paths in project configuration.
 """
 
 from pathlib import Path
+import hashlib
+import json
 
 import extensions
-from project_config import ConfigError, string_list
+from project_config import ConfigError, string_list, atomic_write
 
 BUILTIN_GENERATORS = {
     "constraints": Path(__file__).resolve().parents[1] / "constraints/sdc.py",
@@ -60,7 +62,7 @@ def entries(config):
 def generate(config, root):
     configured = entries(config)
     pending, finished = set(), set()
-    outputs, sources = {}, []
+    outputs, sources = {}, {}
 
     def visit(name):
         if name in finished:
@@ -80,17 +82,63 @@ def generate(config, root):
         if not isinstance(generated, dict):
             raise ConfigError(f"{name}: generate must return a path-to-text mapping")
         for path, content in generated.items():
-            if path in outputs:
-                raise ConfigError(f"Multiple generators own output: {path}")
             if not isinstance(path, str) or not isinstance(content, str):
                 raise ConfigError(
                     f"{name}: generated paths and contents must be strings"
                 )
-            outputs[path] = content
-        sources.extend(description.get("sources", []))
+        outputs[name] = generated
+        sources[name] = description.get("sources", [])
         pending.remove(name)
         finished.add(name)
 
     for name in configured:
         visit(name)
     return outputs, sources
+
+
+def publish(root, updates, declared, *, complete):
+    directory = root / "build/generated"
+    inventory = directory / ".generators.json"
+    previous = json.loads(inventory.read_text()) if inventory.exists() else {}
+    legacy = directory / ".outputs.json"
+    if not previous and legacy.exists():
+        previous["legacy"] = {name: None for name in json.loads(legacy.read_text())}
+    owners = (
+        {name: files for name, files in previous.items() if name in declared}
+        if complete else dict(previous)
+    )
+    if not complete and "legacy" in previous:
+        owners["legacy"] = previous["legacy"]
+    for owner, outputs in updates.items():
+        owners[owner] = {
+            name: hashlib.sha256(content.encode()).hexdigest()
+            for name, content in outputs.items()
+        }
+    claimed = {}
+    for owner, files in owners.items():
+        for name, digest in files.items():
+            path = directory / name
+            if not path.resolve().is_relative_to(directory.resolve()):
+                raise ConfigError("Generated output resolves outside build/generated: " + name)
+            if owner == "legacy":
+                continue
+            if name in claimed and claimed[name] != digest:
+                raise ConfigError("Conflicting generated output: " + name)
+            claimed[name] = digest
+    if "legacy" in owners:
+        owners["legacy"] = {
+            name: digest for name, digest in owners["legacy"].items() if name not in claimed
+        }
+    before = {name for files in previous.values() for name in files}
+    after = {name for files in owners.values() for name in files}
+    for name in before - after:
+        path = directory / name
+        if not path.resolve().is_relative_to(directory.resolve()):
+            raise ConfigError("Invalid generated inventory path: " + name)
+        path.unlink(missing_ok=True)
+    for outputs in updates.values():
+        for name, content in outputs.items():
+            atomic_write(directory / name, content)
+    atomic_write(inventory, json.dumps(owners, indent=2, sort_keys=True) + "\n")
+    if complete:
+        legacy.unlink(missing_ok=True)

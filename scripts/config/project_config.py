@@ -4,6 +4,8 @@ HDL collection, target filtering and dependency resolution belong to Bender.
 """
 
 import hashlib
+import fcntl
+from contextlib import contextmanager
 import json
 import math
 import os
@@ -107,7 +109,89 @@ def configuration_path(project_root, value, location, suffix=None):
     return str(normalized)
 
 
-def load_config(config_path, project_root):
+@contextmanager
+def project_lock(root):
+    with (root / ".project.lock").open("a") as mutex:
+        fcntl.flock(mutex, fcntl.LOCK_EX)
+        yield
+
+
+def select_flows(raw, root, action):
+    from backends import load_backend
+
+    flow = raw.get("flow", {})
+    if not isinstance(flow, dict):
+        raise ConfigError("flow: expected named stages")
+    if action in (None, "config"):
+        requested = list(flow)
+    elif action == "workflow":
+        workflow = raw.get("workflow", {})
+        reject_unknown(workflow, {"stages"}, "workflow")
+        requested = string_list(workflow.get("stages", []), "workflow.stages")
+    else:
+        requested = [action.removesuffix("-build").removesuffix("-run")]
+    selected, visiting = {}, set()
+
+    def visit(stage, name):
+        reference = stage + "." + name
+        if reference in visiting:
+            raise ConfigError("Cyclic flow dependency: " + reference)
+        if name in selected.get(stage, {}):
+            return
+        try:
+            settings = flow[stage][name]
+        except (KeyError, TypeError):
+            raise ConfigError("Unknown flow: " + reference)
+        if not isinstance(settings, dict):
+            raise ConfigError(reference + ": expected a backend table")
+        visiting.add(reference)
+        settings = load_backend(root, stage, name, settings)
+        prerequisite = settings.get("requires")
+        if prerequisite:
+            parts = prerequisite.split(".")
+            if len(parts) != 2:
+                raise ConfigError("requires: expected stage.profile")
+            visit(*parts)
+        selected.setdefault(stage, {})[name] = settings
+        visiting.remove(reference)
+
+    for stage in requested:
+        if stage not in flow or not isinstance(flow[stage], dict) or not flow[stage]:
+            raise ConfigError("No configured stage: " + str(stage))
+        for name in flow[stage]:
+            visit(stage, name)
+    return selected
+
+
+def generator_names(config, settings):
+    available = {
+        name for name, value in config.items()
+        if isinstance(value, dict) and "_generator" in value
+    }
+    roots = settings.get("generators")
+    if roots is None:
+        roots = list(available) if settings["_backend"].get("inherit_design", True) else []
+    roots = set(roots) | {
+        selector.split(".")[0]
+        for selector in settings["_backend"].get("config_inputs", [])
+        if selector.split(".")[0] in available
+    }
+    selected = set()
+
+    def visit(name):
+        if name not in available:
+            raise ConfigError("Missing generator: " + name)
+        if name not in selected:
+            selected.add(name)
+            for dependency in config[name]["_generator"]["requires"]:
+                visit(dependency)
+
+    for name in roots:
+        visit(name)
+    return selected
+
+
+def load_config(config_path, project_root, *, action=None):
     with config_path.open("rb") as stream:
         raw = tomllib.load(stream)
     if raw.get("schema_version") != 7:
@@ -128,7 +212,35 @@ def load_config(config_path, project_root):
         "flow",
         "workflow",
     }
-    extensions = {key: value for key, value in raw.items() if key not in core}
+    all_extensions = {key: value for key, value in raw.items() if key not in core}
+    selected = select_flows(raw, project_root, action)
+    owners = ["generator:" + name for name in all_extensions]
+    owners += [
+        "backend:" + stage + ":" + name
+        for stage, profiles in raw.get("flow", {}).items()
+        if isinstance(profiles, dict) for name in profiles
+    ]
+    needed = set()
+    inherit_design = action in (None, "config")
+    for profiles in selected.values():
+        for settings in profiles.values():
+            inherits = settings["_backend"].get("inherit_design", True)
+            inherit_design |= inherits
+            needed.update(settings.get("generators", list(all_extensions) if inherits else []))
+            needed.update(
+                selector.split(".")[0]
+                for selector in settings["_backend"].get("config_inputs", [])
+                if selector.split(".")[0] in all_extensions
+            )
+    extensions = {name: value for name, value in all_extensions.items() if name in needed}
+    missing = needed - set(extensions)
+    if missing:
+        raise ConfigError("Missing generator: " + ", ".join(sorted(missing)))
+    if not inherit_design:
+        raw["design"] = {}
+    raw["flow"] = selected
+    if action not in (None, "config", "workflow"):
+        raw["workflow"] = {}
     for name, settings in extensions.items():
         if not IDENTIFIER.fullmatch(name) or not isinstance(settings, dict):
             raise ConfigError(f"{name}: expected a named configuration table")
@@ -217,7 +329,7 @@ def load_config(config_path, project_root):
         or build["technology"] not in technologies
     ):
         raise ConfigError("build.technology: unknown technology")
-    from backends import invoke, load_backend
+    from backends import invoke
 
     flow = raw.get("flow", {})
     if not isinstance(flow, dict):
@@ -249,7 +361,7 @@ def load_config(config_path, project_root):
         for name, settings in tools.items():
             if not IDENTIFIER.fullmatch(name) or not isinstance(settings, dict):
                 raise ConfigError(f"flow.{stage}: expected named backend tables")
-            settings = load_backend(project_root, stage, name, settings)
+            settings = selected[stage][name]
             settings["technologies"] = string_list(
                 settings.get("technologies", [build["technology"]]), "technologies"
             )
@@ -308,8 +420,19 @@ def load_config(config_path, project_root):
     }
     import generators
 
-    for name, settings in extensions.items():
-        config[name] = generators.load(name, settings, project_root)
+    def load_generator(name):
+        if name in config:
+            return
+        if name not in all_extensions or not isinstance(all_extensions[name], dict):
+            raise ConfigError("Missing generator table: " + name)
+        config[name] = generators.load(name, all_extensions[name], project_root)
+        for dependency in config[name]["_generator"]["requires"]:
+            load_generator(dependency)
+
+    for name in extensions:
+        load_generator(name)
+    config["_generation_owners"] = owners
+    config["_complete"] = action in (None, "config")
     for tools in normalized_flow.values():
         for settings in tools.values():
             invoke(settings, "configure", config, settings, project_root)

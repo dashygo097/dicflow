@@ -1,4 +1,7 @@
 package:
   name: dicflow
 
-sources: []
+sources:
+  - target: verify
+    files:
+      - rtl/dicflow_verify_pkg.sv

@@ -1,7 +1,6 @@
 """Single project driver, called by Make. Bender owns HDL/package resolution."""
 
 import argparse
-import fcntl
 import hashlib
 import json
 import os
@@ -11,6 +10,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import bender
@@ -19,13 +19,18 @@ import generators
 from backends import commands, context, declared_outputs
 from backends import environment as backend_environment
 from backends import invoke, technology_inputs
-from project_config import ConfigError, atomic_write, config_digest, load_config
+from project_config import project_lock, generator_names, ConfigError, atomic_write, config_digest, load_config
 
 ROOT = Path(os.environ.get("PROJECT_ROOT", os.getcwd())).resolve()
 GENERATED = ROOT / "build/generated"
 
 
 def sha256(path):
+    if path.is_dir():
+        return config_digest({
+            str(file.relative_to(path)): sha256(file)
+            for file in sorted(path.rglob("*")) if file.is_file()
+        })
     value = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -126,8 +131,15 @@ def tool_identity(command, arguments):
     }
 
 
+def build_entry(entry):
+    runtime = entry["settings"]["_backend"].get("runtime_options", [])
+    return {**entry, "settings": {
+        key: value for key, value in entry["settings"].items() if key not in runtime
+    }}
+
+
 def stage_configuration(config, entry):
-    settings = entry["settings"]
+    settings = build_entry(entry)["settings"]
     backend = settings["_backend"]
     technology = config["technology"][entry["technology"]]
     sections = {key.split(".")[0] for key in backend.get("technology_inputs", [])}
@@ -143,7 +155,7 @@ def stage_configuration(config, entry):
             value = value.get(key) if isinstance(value, dict) else None
         consumed[selector] = value
     return {
-        "design": config["design"],
+        "design": config["design"] if backend.get("inherit_design", True) else {},
         "flow": settings,
         "technology": selected,
         "configuration": consumed,
@@ -277,7 +289,7 @@ def check_cached_outputs(config, entry, input_digest):
             and set(record["artifacts"])
             == {str(path) for path in artifact_paths(config, entry)}
             and all(
-                Path(path).is_file() and sha256(Path(path)) == digest
+                Path(path).exists() and sha256(Path(path)) == digest
                 for path, digest in record["artifacts"].items()
             )
         )
@@ -348,20 +360,14 @@ def prepare(config, update=False, stages=None):
         if stages is None or entry["stage"] in stages:
             select(entry)
     generated, declared_sources = generators.generate(config, ROOT)
-    source_groups = [bender.source(GENERATED, group) for group in declared_sources]
-    for entry in resolved:
-        for group in entry["settings"]["_backend"].get("generated_sources", []):
-            group = bender.source(GENERATED, group)
-            if group not in source_groups:
-                source_groups.append(group)
-        outputs = (
-            invoke(entry["settings"], "generate", config, entry["settings"], ROOT) or {}
-        )
-        for name, content in outputs.items():
-            if name in generated and generated[name] != content:
-                raise ConfigError("Conflicting generated output: " + name)
-            generated[name] = content
-    synchronize_outputs(GENERATED, generated)
+    updates = {"generator:" + name: outputs for name, outputs in generated.items()}
+    for entry in active:
+        owner = "backend:" + entry["stage"] + ":" + entry["tool"]
+        outputs = invoke(entry["settings"], "generate", config, entry["settings"], ROOT) or {}
+        if owner in updates and updates[owner] != outputs:
+            raise ConfigError("Technology-dependent shared generator outputs must agree: " + owner)
+        updates[owner] = outputs
+    generators.publish(ROOT, updates, config["_generation_owners"], complete=config["_complete"])
     # Backend-generated HDL must exist before Bender resolves/globs sources.
     provenance = bender.resolve(config, ROOT, update)
     package_state = bender.packages(ROOT, config["build"]["reproducible"])
@@ -382,6 +388,7 @@ def prepare(config, update=False, stages=None):
         ".DEFAULT_GOAL := workflow",
     ]
     by_stage = {stage: [] for stage in config["flow"]}
+    build_targets = {stage: [] for stage in config["flow"]}
     snapshots = {}
     for entry in active:
         stage_directory = ROOT / "build" / entry["stage"]
@@ -390,8 +397,21 @@ def prepare(config, update=False, stages=None):
         directory = GENERATED / "flows" / entry["id"]
         directory.mkdir(parents=True, exist_ok=True)
         active_targets = targets_for(config, entry)
+        wanted = generator_names(config, entry["settings"])
+        source_groups = [
+            bender.source(GENERATED, group)
+            for name, groups in declared_sources.items() if name in wanted for group in groups
+        ]
+        source_groups.extend(
+            bender.source(GENERATED, group)
+            for group in backend.get("generated_sources", [])
+        )
+        project_sources = (
+            config["design"]["sources"] if backend.get("inherit_design", True)
+            else entry["settings"].get("sources", [])
+        )
         compilation_root = (
-            bender.compilation_root(config, ROOT, active_targets, source_groups)
+            bender.compilation_root(config, ROOT, active_targets, source_groups, project_sources=project_sources)
             if backend["format"]
             else ROOT
         )
@@ -440,7 +460,7 @@ def prepare(config, update=False, stages=None):
         }
         provider = provider_for(config, entry)
         snapshot = {
-            "entry": entry,
+            "entry": build_entry(entry),
             "configuration": scope,
             "configuration_digest": config_digest(scope),
             "bender": {
@@ -501,9 +521,22 @@ def prepare(config, update=False, stages=None):
                 ),
             ]
         )
-        by_stage[entry["stage"]].append(make_path(stamp))
+        build_targets[entry["stage"]].append(make_path(stamp))
+        target = make_path(stamp)
+        if backend.get("run_after_build"):
+            target = make_path(stage_path(entry) / ".run", target=True)
+            make_lines.extend([
+                ".PHONY: " + target,
+                target + ": " + make_path(stamp),
+                "\t@" + make_command([sys.executable, str(Path(__file__)), "execute-run", str(snapshot_path)]),
+            ])
+        by_stage[entry["stage"]].append(target)
     for stage, stamps in by_stage.items():
-        make_lines.append(stage + ": " + " ".join(stamps))
+        make_lines.extend([
+            ".PHONY: " + stage + "-build",
+            stage + "-build: " + " ".join(build_targets[stage]),
+            stage + ": " + " ".join(stamps),
+        ])
         if not stamps:
             make_lines.append(
                 "\t@echo 'ERROR: no backend configured for " + stage + "' >&2; exit 2"
@@ -513,6 +546,8 @@ def prepare(config, update=False, stages=None):
         make_lines.append(f".PHONY: {stage}-run")
         make_lines.append(f"{stage}-run: {stage}")
         candidates = [entry for entry in active if entry["stage"] == stage]
+        if candidates and all(item["settings"]["_backend"].get("run_after_build") for item in candidates):
+            continue
         if len(candidates) == 1:
             runtime_input = GENERATED / "flows" / candidates[0]["id"] / "inputs.json"
             make_lines.append(
@@ -595,7 +630,7 @@ def preflight(config, snapshot):
     }.items():
         if checksum is None:
             raise ConfigError("Required input is missing: " + path)
-        if not Path(path).is_file() or sha256(Path(path)) != checksum:
+        if not Path(path).exists() or sha256(Path(path)) != checksum:
             raise ConfigError("Input changed after preparation; rerun make: " + path)
     technology = config["technology"][entry["technology"]]
     assets = {asset["path"]: asset for asset in technology.get("assets", {}).values()}
@@ -654,16 +689,23 @@ def stream_command(argv, cwd, environment, log):
 
 
 def execute(snapshot_path, run=False):
-    config = load_config(ROOT / "Project.toml", ROOT)
-    check_framework(config)
     snapshot = json.loads(snapshot_path.read_text())
-    entry = snapshot["entry"]
-    if entry not in entries(config):
+    config = load_config(ROOT / "Project.toml", ROOT, action=snapshot["entry"]["stage"])
+    check_framework(config)
+    candidates = [item for item in entries(config) if build_entry(item) == snapshot["entry"]]
+    if len(candidates) != 1:
         raise ConfigError("Stale or unrecognized stage descriptor; rerun make")
+    entry = candidates[0]
     expected_input = GENERATED / "flows" / entry["id"] / "inputs.json"
     if snapshot_path.resolve() != expected_input.resolve():
         raise ConfigError("Stage inputs must come from the generated flow directory")
-    directory = stage_path(entry) / "run" if run else stage_path(entry)
+    directory = stage_path(entry)
+    if run:
+        directory = (
+            directory / "runs" / (str(time.time_ns()) + "-" + uuid.uuid4().hex[:8])
+            if entry["settings"]["_backend"].get("preserve_runs")
+            else directory / "run"
+        )
     if not directory.resolve().is_relative_to((ROOT / "build").resolve()):
         raise ConfigError("Stage output directory resolves outside build/")
     directory.mkdir(parents=True, exist_ok=True)
@@ -750,8 +792,11 @@ def execute(snapshot_path, run=False):
                 )
             preflight(config, snapshot)
             if run:
+                if not check_cached_outputs(config, entry, snapshot["input_digest"]):
+                    raise ConfigError("Compiled artifacts changed; rebuild before running")
                 runtime = invoke(
-                    entry["settings"], "run", config, entry, stage_path(entry)
+                    entry["settings"], "run", config,
+                    {**entry, "run_directory": str(directory)}, stage_path(entry)
                 )
                 if not runtime:
                     raise ConfigError("This backend does not implement a run action")
@@ -787,9 +832,13 @@ def execute(snapshot_path, run=False):
             if status == 0:
                 # Never certify a run whose inputs were modified while EDA ran.
                 preflight(config, snapshot)
-                expected = [summary] if run else artifact_paths(config, entry)
+                expected = (
+                    [summary, *declared_outputs(config, entry, ROOT, directory,
+                        snapshot_path.parent, snapshot["input_digest"], run=True)]
+                    if run else artifact_paths(config, entry)
+                )
                 for path in expected:
-                    if not path.is_file() or not path.stat().st_size:
+                    if not path.exists() or (path.is_file() and not path.stat().st_size):
                         raise ConfigError(
                             "Tool did not create required artifact: " + str(path)
                         )
@@ -842,9 +891,8 @@ def main():
                 parser.error(f"{args.action} requires a prepared input snapshot")
             return execute(args.input, args.action == "execute-run")
         (ROOT / "build").mkdir(exist_ok=True)
-        with (ROOT / "build/.project.lock").open("a") as mutex:
-            fcntl.flock(mutex, fcntl.LOCK_EX)
-            config = load_config(ROOT / "Project.toml", ROOT)
+        with project_lock(ROOT):
+            config = load_config(ROOT / "Project.toml", ROOT, action=args.action)
             check_framework(config)
             action = args.action.removesuffix("-build")
             stage = action.removesuffix("-run")
@@ -853,13 +901,13 @@ def main():
                 and stage not in config["flow"]
             ):
                 raise ConfigError(f"No configured stage: {stage}")
-            goals = config["workflow"]["stages"] if action == "workflow" else [action]
+            goals = config["workflow"]["stages"] if action == "workflow" else [args.action if args.action.endswith("-build") else action]
             if args.action == "config":
                 stages = None
             elif args.action == "deps-update":
                 stages = []
             else:
-                stages = [goal.removesuffix("-run") for goal in goals]
+                stages = [goal.removesuffix("-build").removesuffix("-run") for goal in goals]
             updated = os.environ.get("PROJECT_BOOTSTRAP_LOCK")
             if updated and sha256(ROOT / "Bender.lock") != updated:
                 raise ConfigError(

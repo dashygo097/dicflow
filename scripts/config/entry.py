@@ -1,13 +1,12 @@
 """Shared command entry; owns project environments and output lifecycle."""
 
-import fcntl
 import hashlib
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-from project_config import ConfigError
+from project_config import ConfigError, project_lock
 
 
 def main():
@@ -21,8 +20,7 @@ def main():
         PYTHON_BIN=sys.executable,
         PROJECT_VENV_DIR=str(root / "build/.venv"),
     )
-    with (root / "build/.project.lock").open("a") as mutex:
-        fcntl.flock(mutex, fcntl.LOCK_EX)
+    with project_lock(root):
         if (
             hashlib.sha256(lock.read_bytes()).hexdigest()
             != os.environ["PROJECT_BOOTSTRAP_LOCK"]

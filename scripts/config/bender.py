@@ -58,8 +58,9 @@ def source(root, value):
     return result
 
 
-def compilation_root(config, root, targets, generated_sources):
-    project_sources = config["design"]["sources"]
+def compilation_root(config, root, targets, generated_sources, *, project_sources=None):
+    if project_sources is None:
+        project_sources = config["design"]["sources"]
     if not project_sources and not generated_sources:
         return root
     arguments = [part for target in targets for part in ("-t", target)]
@@ -102,10 +103,10 @@ def export(root, targets, format_name):
     args = [part for target in targets for part in ("-t", target)]
     # Never let different export formats introduce different implicit target sets.
     content = command(root, "script", "--no-default-target", *args, format_name)
-    if format_name == "verilator":
+    if format_name in ("verilator", "flist-plus"):
         # Bender 0.32 emits one argument per line without quoting whitespace.
-        # Preserve its arguments/order while encoding them for Verilator's -f
-        # parser; source discovery and target selection remain native Bender.
+        # Preserve its arguments/order while quoting native command-file entries;
+        # source discovery and target selection remain native Bender.
         lines = []
         for line in content.splitlines():
             if line and not line.lstrip().startswith(("//", "#")):

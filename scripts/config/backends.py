@@ -7,6 +7,10 @@ publishes these separately from each build's cache and artifact checksums.
 generated_sources declares native Bender groups relative to build/generated;
 these configuration packages precede handwritten RTL in the projected manifest.
 summary="log" opts into using the execution log as the summary report.
+inherit_design=False gives a module verification profile its own sources/top.
+run_after_build schedules a run for each request; runtime_options are excluded
+from compilation fingerprints. preserve_runs retains each attempt, and
+run_outputs declares required machine-readable reports.
 inherit_targets=True uses the prerequisite's source targets (e.g. equivalence).
 
 Optional hooks:
@@ -17,6 +21,7 @@ Optional hooks:
   preflight(config, entry, root): backend-specific execution requirements.
   collect(config, entry, directory, snapshot): publish native tool artifacts.
   run(config, entry, directory): {commands: [...], inputs: [file paths...]}.
+    directory is the compiled stage; entry.run_directory is the current attempt.
 
 Generation hooks return {relative_path: text}. Shared outputs must agree across
 entries. Commands are argv arrays; arbitrary options remain backend-owned.
@@ -54,9 +59,9 @@ def load_backend(root, stage, name, settings):
         raise ConfigError(f"{definition}: format must name a Bender export format")
     description.setdefault("version_args", ["--version"])
     string_list(description["version_args"], "backend version_args")
-    for key in ("inputs", "config_inputs", "technology_inputs", "tracked_environment"):
+    for key in ("inputs", "config_inputs", "technology_inputs", "tracked_environment", "runtime_options", "run_outputs"):
         string_list(description.get(key, []), f"backend {key}")
-    for key in ("requires_top", "inherit_targets"):
+    for key in ("requires_top", "inherit_targets", "inherit_design", "run_after_build", "preserve_runs"):
         if key in description and not isinstance(description[key], bool):
             raise ConfigError(f"{definition}: {key} must be boolean")
     description.setdefault("source", "sources.f")
@@ -85,6 +90,8 @@ def load_backend(root, stage, name, settings):
         not isinstance(prerequisite, str) or not prerequisite
     ):
         raise ConfigError("requires: expected a stage.backend reference")
+    if "generators" in resolved:
+        string_list(resolved["generators"], "generators")
     for key in ("options", "targets"):
         resolved.setdefault(key, [])
         string_list(resolved[key], key)
@@ -180,7 +187,7 @@ def context(config, entry, root, stage_dir, inputs, input_digest):
         "model": str(stage_dir / "model" / input_digest),
         "inputs": str(inputs),
         "generated": str(root / "build/generated"),
-        "top": config["design"]["top"],
+        "top": config["design"]["top"] if entry["settings"]["_backend"].get("inherit_design", True) else "",
         "jobs": str(config["build"]["jobs"]),
         "script": entry["settings"].get("script", ""),
         "input_digest": input_digest,
@@ -212,11 +219,10 @@ def commands(config, entry, root, stage_dir, inputs, input_digest):
     return result
 
 
-def declared_outputs(config, entry, root, stage_dir, inputs, input_digest):
+def declared_outputs(config, entry, root, stage_dir, inputs, input_digest, *, run=False):
     values = context(config, entry, root, stage_dir, inputs, input_digest)
-    patterns = entry["settings"].get(
-        "outputs", entry["settings"]["_backend"].get("outputs")
-    )
+    key = "run_outputs" if run else "outputs"
+    patterns = entry["settings"].get(key, entry["settings"]["_backend"].get(key, []))
     paths = [Path(expand(pattern, values)) for pattern in patterns]
     for path in paths:
         if not path.resolve().is_relative_to(stage_dir.resolve()):
