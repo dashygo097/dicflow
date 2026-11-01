@@ -1,11 +1,10 @@
-"""Execute a module test/seed matrix and normalize checked simulator results.
+"""Run a module testbench per seed and normalize checked simulator results.
 
 The testbench must emit exactly one DICFLOW_VERIFY_PASS checks=<positive count>
 using dicflow_verify_pkg::pass_test. Exit zero alone never certifies a test.
 """
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -57,9 +56,9 @@ def inspect_log(path):
     return markers == 1 and checks > 0 and not errors, checks, "\n".join(tail)[-12000:]
 
 
-def run_case(executable, simulator, test, seed, timeout, work, logs):
+def run_case(executable, simulator, seed, timeout, work, logs):
     global _active
-    identity = hashlib.sha256(f"{test}:{seed}".encode()).hexdigest()[:12]
+    identity = f"seed-{seed}"
     directory = work / identity
     directory.mkdir()
     log = logs / (identity + ".log")
@@ -68,7 +67,7 @@ def run_case(executable, simulator, test, seed, timeout, work, logs):
         if simulator == "verilator"
         else f"+ntb_random_seed={seed}"
     )
-    argv = [str(executable), f"+TEST={test}", f"+UVM_TESTNAME={test}", seed_argument]
+    argv = [str(executable), seed_argument]
     started = time.time()
     status, code, detail = "ERROR", None, ""
     try:
@@ -99,7 +98,6 @@ def run_case(executable, simulator, test, seed, timeout, work, logs):
             "Missing or invalid completion marker, or simulator reported errors",
         )
     result = {
-        "test": test,
         "seed": seed,
         "status": status,
         "exit_code": code,
@@ -117,9 +115,7 @@ def run_case(executable, simulator, test, seed, timeout, work, logs):
             if path.is_file() and path.suffix in (".vcd", ".fst", ".vpd", ".fsdb")
         ],
     }
-    print(
-        f"[VERIFY] {test} seed={seed}: {status} ({result['seconds']:.3f}s)", flush=True
-    )
+    print(f"[VERIFY] seed={seed}: {status} ({result['seconds']:.3f}s)", flush=True)
     return result
 
 
@@ -146,7 +142,7 @@ def reports(results, directory):
         case = ET.SubElement(
             suite,
             "testcase",
-            name=f"{result['test']}[seed={result['seed']}]",
+            name=f"seed={result['seed']}",
             time=str(result["seconds"]),
         )
         if result["status"] != "PASS":
@@ -175,9 +171,9 @@ def main():
     parser.add_argument("--plan", type=Path, required=True)
     args = parser.parse_args()
     plan = json.loads(args.plan.read_text())
-    matrix = [(test, seed) for test in plan["tests"] for seed in plan["seeds"]]
-    if not matrix:
-        raise ValueError("Verification matrix must contain at least one case")
+    seeds = plan["seeds"]
+    if not seeds:
+        raise ValueError("Verification requires at least one seed")
     work = Path(os.environ["STAGE_WORK_DIR"]) / "cases"
     logs = Path(os.environ["STAGE_REPORT_DIR"]) / "cases"
     work.mkdir(parents=True)
@@ -186,12 +182,11 @@ def main():
     signal.signal(signal.SIGINT, interrupted)
     results = []
     try:
-        for test, seed in matrix:
+        for seed in seeds:
             results.append(
                 run_case(
                     args.executable,
                     args.simulator,
-                    test,
                     seed,
                     plan["timeout_seconds"],
                     work,
@@ -199,10 +194,9 @@ def main():
                 )
             )
     except KeyboardInterrupt:
-        for test, seed in matrix[len(results) :]:
+        for seed in seeds[len(results) :]:
             results.append(
                 {
-                    "test": test,
                     "seed": seed,
                     "status": "ERROR",
                     "detail": "Interrupted",

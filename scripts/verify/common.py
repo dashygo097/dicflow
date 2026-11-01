@@ -7,15 +7,9 @@ import re
 import sys
 from pathlib import Path
 
-from project_config import (
-    ConfigError,
-    atomic_write,
-    number,
-    reject_unknown,
-    string_list,
-)
+from project_config import ConfigError, atomic_write, number, reject_unknown
 
-RUNTIME_OPTIONS = ["tests", "seeds", "timeout_seconds"]
+RUNTIME_OPTIONS = ["seeds", "timeout_seconds"]
 
 
 def configure(config, settings, root):
@@ -26,7 +20,6 @@ def configure(config, settings, root):
             "testbench",
             "targets",
             "options",
-            "tests",
             "seeds",
             "timeout_seconds",
             "sources",
@@ -45,14 +38,6 @@ def configure(config, settings, root):
         r"[A-Za-z_][A-Za-z0-9_$]*", testbench
     ):
         raise ConfigError("flow.verify.testbench: expected a module identifier")
-    tests = settings.setdefault("tests", ["smoke"])
-    string_list(tests, "flow.verify.tests")
-    if (
-        not tests
-        or len(set(tests)) != len(tests)
-        or any(not re.fullmatch(r"[A-Za-z0-9_.:]+", name) for name in tests)
-    ):
-        raise ConfigError("flow.verify.tests: expected distinct test names")
     seeds = settings.setdefault("seeds", [1])
     if (
         not isinstance(seeds, list)
@@ -110,7 +95,6 @@ def run(config, entry, directory):
         plan,
         json.dumps(
             {
-                "tests": settings["tests"],
                 "seeds": settings["seeds"],
                 "timeout_seconds": settings["timeout_seconds"],
             },

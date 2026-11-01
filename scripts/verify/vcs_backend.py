@@ -1,8 +1,8 @@
 """Independent SystemVerilog/UVM module verification using VCS.
 
 Each completed test calls dicflow_verify_pkg::pass_test(check_count).
-UVM projects supply native compile options and receive UVM_TESTNAME. Their top
-sets finish_on_completion=0 and reports completion only after run_test returns,
+The testbench owns test selection. UVM tops set finish_on_completion=0
+and report completion only after run_test returns,
 so UVM check/report phases run before pass_test is called.
 Type parameters are bound in the testbench; parameters overrides value parameters.
 """
@@ -23,21 +23,22 @@ BACKEND = {
     "run_after_build": True,
     "preserve_runs": True,
     "runtime_options": RUNTIME_OPTIONS,
+    "tracked_environment": ["VCS_HOME", "VCS_TARGET_ARCH"],
     "run_outputs": ["{reports}/summary.json", "{reports}/junit.xml"],
     "commands": [
+        ["mkdir", "-p", "{work}/simulator"],
         [
             "vcs",
-            "-full64",
             "-sverilog",
             "-top",
             "{testbench}",
             "-Mdir={work}/simulator",
             "-o",
             "{work}/simulator/simv",
-            "-f",
+            "-file",
             "{inputs}/sources.f",
             "{options}",
-        ]
+        ],
     ],
     "outputs": ["{work}/simulator", "{reports}/summary.rpt"],
 }
@@ -45,9 +46,12 @@ BACKEND = {
 
 def configure(config, settings, root):
     configure_common(config, settings, root)
-    argv = list(BACKEND["commands"][0])
+    # Use the explicitly requested mode for probing too; otherwise defer to VCS.
+    mode_options = [option for option in settings["options"] if option == "-full64"]
+    settings["_backend"]["version_args"] = [*mode_options, "-ID"]
+    argv = list(BACKEND["commands"][-1])
     argv.extend(
         f"-pvalue+{settings['testbench']}.{name}={parameter_value(value)}"
         for name, value in settings["parameters"].items()
     )
-    settings["commands"] = [argv]
+    settings["commands"] = [*BACKEND["commands"][:-1], argv]

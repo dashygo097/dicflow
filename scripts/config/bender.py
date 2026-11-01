@@ -103,10 +103,10 @@ def export(root, targets, format_name):
     args = [part for target in targets for part in ("-t", target)]
     # Never let different export formats introduce different implicit target sets.
     content = command(root, "script", "--no-default-target", *args, format_name)
-    if format_name in ("verilator", "flist-plus"):
-        # Bender 0.32 emits one argument per line without quoting whitespace.
-        # Preserve its arguments/order while quoting native command-file entries;
-        # source discovery and target selection remain native Bender.
+    if format_name == "verilator":
+        # Verilator accepts quoted response-file arguments, including options.
+        # Keep this tool-specific: quoting a complete +define/+incdir option
+        # can make VCS interpret it as a source filename.
         lines = []
         for line in content.splitlines():
             if line and not line.lstrip().startswith(("//", "#")):
