@@ -1,4 +1,4 @@
-package dicflow_verify_pkg;
+package df_verify_pkg;
   task automatic check(input logic condition, input string message);
     if (condition !== 1'b1) begin
       $fatal(1, "%s", message);

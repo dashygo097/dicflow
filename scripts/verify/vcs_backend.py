@@ -11,7 +11,7 @@ from backends import parameter_value
 
 from .common import RUNTIME_OPTIONS, collect
 from .common import configure as configure_common
-from .common import run
+from .common import run as run_common
 
 BACKEND = {
     "tool": "vcs",
@@ -55,3 +55,14 @@ def configure(config, settings, root):
         for name, value in settings["parameters"].items()
     )
     settings["commands"] = [*BACKEND["commands"][:-1], argv]
+
+
+def run(config, entry, directory):
+    # Keep runtime coverage outside the immutable compiled model. Each seed gets
+    # its own database so concurrent or repeated tests cannot overwrite it.
+    return run_common(
+        config,
+        entry,
+        directory,
+        case_arguments=["-cm_dir", "{case}/coverage.vdb", "-cm_name", "seed-{seed}"],
+    )

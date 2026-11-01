@@ -85,7 +85,9 @@ def collect(config, entry, directory, snapshot):
         )
 
 
-def run(config, entry, directory):
+def run(config, entry, directory, *, case_arguments=()):
+    # Backend-owned argv templates are expanded per seed by the runner.
+    # {case} names its isolated working directory; {seed} names the current seed.
     settings = entry["settings"]
     executable = directory / "work/simulator/simv"
     if not executable.is_file():
@@ -96,6 +98,7 @@ def run(config, entry, directory):
         json.dumps(
             {
                 "seeds": settings["seeds"],
+                "arguments": list(case_arguments),
                 "timeout_seconds": settings["timeout_seconds"],
             },
             indent=2,

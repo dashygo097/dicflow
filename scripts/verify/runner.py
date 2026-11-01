@@ -56,7 +56,7 @@ def inspect_log(path):
     return markers == 1 and checks > 0 and not errors, checks, "\n".join(tail)[-12000:]
 
 
-def run_case(executable, simulator, seed, timeout, work, logs):
+def run_case(executable, simulator, seed, timeout, work, logs, arguments=()):
     global _active
     identity = f"seed-{seed}"
     directory = work / identity
@@ -68,6 +68,10 @@ def run_case(executable, simulator, seed, timeout, work, logs):
         else f"+ntb_random_seed={seed}"
     )
     argv = [str(executable), seed_argument]
+    argv.extend(
+        argument.replace("{case}", str(directory)).replace("{seed}", str(seed))
+        for argument in arguments
+    )
     started = time.time()
     status, code, detail = "ERROR", None, ""
     try:
@@ -171,6 +175,11 @@ def main():
     parser.add_argument("--plan", type=Path, required=True)
     args = parser.parse_args()
     plan = json.loads(args.plan.read_text())
+    arguments = plan.get("arguments", [])
+    if not isinstance(arguments, list) or any(
+        not isinstance(value, str) for value in arguments
+    ):
+        raise ValueError("Verification arguments must be an array of strings")
     seeds = plan["seeds"]
     if not seeds:
         raise ValueError("Verification requires at least one seed")
@@ -191,6 +200,7 @@ def main():
                     plan["timeout_seconds"],
                     work,
                     logs,
+                    arguments,
                 )
             )
     except KeyboardInterrupt:
