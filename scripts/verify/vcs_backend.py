@@ -8,7 +8,10 @@ Type parameters are bound in the testbench; parameters overrides value parameter
 """
 
 from backends import parameter_value
-from .common import RUNTIME_OPTIONS, configure as configure_common, collect, run
+
+from .common import RUNTIME_OPTIONS, collect
+from .common import configure as configure_common
+from .common import run
 
 BACKEND = {
     "tool": "vcs",
@@ -21,9 +24,21 @@ BACKEND = {
     "preserve_runs": True,
     "runtime_options": RUNTIME_OPTIONS,
     "run_outputs": ["{reports}/summary.json", "{reports}/junit.xml"],
-    "commands": [["vcs", "-full64", "-sverilog", "-top", "{testbench}",
-                  "-Mdir={work}/simulator", "-o", "{work}/simulator/simv",
-                  "-f", "{inputs}/sources.f", "{options}"]],
+    "commands": [
+        [
+            "vcs",
+            "-full64",
+            "-sverilog",
+            "-top",
+            "{testbench}",
+            "-Mdir={work}/simulator",
+            "-o",
+            "{work}/simulator/simv",
+            "-f",
+            "{inputs}/sources.f",
+            "{options}",
+        ]
+    ],
     "outputs": ["{work}/simulator", "{reports}/summary.rpt"],
 }
 

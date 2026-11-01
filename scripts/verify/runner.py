@@ -5,17 +5,17 @@ using dicflow_verify_pkg::pass_test. Exit zero alone never certifies a test.
 """
 
 import argparse
-from collections import deque
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import shlex
 import signal
 import subprocess
 import time
 import xml.etree.ElementTree as ET
+from collections import deque
+from pathlib import Path
 
 _active = None
 
@@ -63,14 +63,23 @@ def run_case(executable, simulator, test, seed, timeout, work, logs):
     directory = work / identity
     directory.mkdir()
     log = logs / (identity + ".log")
-    seed_argument = f"+verilator+seed+{seed}" if simulator == "verilator" else f"+ntb_random_seed={seed}"
+    seed_argument = (
+        f"+verilator+seed+{seed}"
+        if simulator == "verilator"
+        else f"+ntb_random_seed={seed}"
+    )
     argv = [str(executable), f"+TEST={test}", f"+UVM_TESTNAME={test}", seed_argument]
     started = time.time()
     status, code, detail = "ERROR", None, ""
     try:
         with log.open("w") as output:
-            _active = subprocess.Popen(argv, cwd=directory, stdout=output,
-                                       stderr=subprocess.STDOUT, start_new_session=True)
+            _active = subprocess.Popen(
+                argv,
+                cwd=directory,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
             try:
                 code = _active.wait(timeout=timeout)
                 status = "PASS" if code == 0 else "FAIL"
@@ -85,40 +94,76 @@ def run_case(executable, simulator, test, seed, timeout, work, logs):
         _active = None
     passed, checks, tail = inspect_log(log)
     if status == "PASS" and not passed:
-        status, detail = "FAIL", "Missing or invalid completion marker, or simulator reported errors"
+        status, detail = (
+            "FAIL",
+            "Missing or invalid completion marker, or simulator reported errors",
+        )
     result = {
-        "test": test, "seed": seed, "status": status, "exit_code": code,
-        "checks": checks, "seconds": time.time() - started,
-        "command": argv, "cwd": str(directory), "log": str(log),
+        "test": test,
+        "seed": seed,
+        "status": status,
+        "exit_code": code,
+        "checks": checks,
+        "seconds": time.time() - started,
+        "command": argv,
+        "cwd": str(directory),
+        "log": str(log),
         "reproduce": "cd " + shlex.quote(str(directory)) + " && " + shlex.join(argv),
-        "detail": detail, "tail": tail if status != "PASS" else "",
-        "waveforms": [str(path) for path in directory.rglob("*")
-                      if path.is_file() and path.suffix in (".vcd", ".fst", ".vpd", ".fsdb")],
+        "detail": detail,
+        "tail": tail if status != "PASS" else "",
+        "waveforms": [
+            str(path)
+            for path in directory.rglob("*")
+            if path.is_file() and path.suffix in (".vcd", ".fst", ".vpd", ".fsdb")
+        ],
     }
-    print(f"[VERIFY] {test} seed={seed}: {status} ({result['seconds']:.3f}s)", flush=True)
+    print(
+        f"[VERIFY] {test} seed={seed}: {status} ({result['seconds']:.3f}s)", flush=True
+    )
     return result
 
 
 def reports(results, directory):
     directory.mkdir(parents=True, exist_ok=True)
-    counts = {status: sum(item["status"] == status for item in results)
-              for status in ("PASS", "FAIL", "TIMEOUT", "ERROR")}
-    summary = {"status": "PASS" if results and counts["PASS"] == len(results) else "FAIL",
-               "counts": counts, "cases": results}
+    counts = {
+        status: sum(item["status"] == status for item in results)
+        for status in ("PASS", "FAIL", "TIMEOUT", "ERROR")
+    }
+    summary = {
+        "status": "PASS" if results and counts["PASS"] == len(results) else "FAIL",
+        "counts": counts,
+        "cases": results,
+    }
     (directory / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-    suite = ET.Element("testsuite", name="dicflow.verify", tests=str(len(results)),
-                       failures=str(counts["FAIL"]), errors=str(counts["TIMEOUT"] + counts["ERROR"]))
+    suite = ET.Element(
+        "testsuite",
+        name="dicflow.verify",
+        tests=str(len(results)),
+        failures=str(counts["FAIL"]),
+        errors=str(counts["TIMEOUT"] + counts["ERROR"]),
+    )
     for result in results:
-        case = ET.SubElement(suite, "testcase", name=f"{result['test']}[seed={result['seed']}]",
-                             time=str(result["seconds"]))
+        case = ET.SubElement(
+            suite,
+            "testcase",
+            name=f"{result['test']}[seed={result['seed']}]",
+            time=str(result["seconds"]),
+        )
         if result["status"] != "PASS":
             tag = "failure" if result["status"] == "FAIL" else "error"
-            failure = ET.SubElement(case, tag, type=result["status"], message=result["detail"])
+            failure = ET.SubElement(
+                case, tag, type=result["status"], message=result["detail"]
+            )
             failure.text = result.get("tail", "")
-    ET.ElementTree(suite).write(directory / "junit.xml", encoding="utf-8", xml_declaration=True)
+    ET.ElementTree(suite).write(
+        directory / "junit.xml", encoding="utf-8", xml_declaration=True
+    )
     (directory / "summary.rpt").write_text(
-        "Verification " + summary["status"] + "\n"
-        + "\n".join(f"{name}: {count}" for name, count in counts.items()) + "\n"
+        "Verification "
+        + summary["status"]
+        + "\n"
+        + "\n".join(f"{name}: {count}" for name, count in counts.items())
+        + "\n"
     )
     return 0 if summary["status"] == "PASS" else 1
 
@@ -142,12 +187,28 @@ def main():
     results = []
     try:
         for test, seed in matrix:
-            results.append(run_case(args.executable, args.simulator, test, seed,
-                                    plan["timeout_seconds"], work, logs))
+            results.append(
+                run_case(
+                    args.executable,
+                    args.simulator,
+                    test,
+                    seed,
+                    plan["timeout_seconds"],
+                    work,
+                    logs,
+                )
+            )
     except KeyboardInterrupt:
-        for test, seed in matrix[len(results):]:
-            results.append({"test": test, "seed": seed, "status": "ERROR",
-                            "detail": "Interrupted", "seconds": 0})
+        for test, seed in matrix[len(results) :]:
+            results.append(
+                {
+                    "test": test,
+                    "seed": seed,
+                    "status": "ERROR",
+                    "detail": "Interrupted",
+                    "seconds": 0,
+                }
+            )
         reports(results, Path(os.environ["STAGE_REPORT_DIR"]))
         return 130
     return reports(results, Path(os.environ["STAGE_REPORT_DIR"]))
