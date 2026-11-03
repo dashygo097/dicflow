@@ -1,7 +1,7 @@
 """Run a module testbench per seed and normalize checked simulator results.
 
 The testbench must emit exactly one DICFLOW_VERIFY_PASS checks=<positive count>
-using dicflow_verify_pkg::pass_test. Exit zero alone never certifies a test.
+using df_verify_pkg::pass_test. Exit zero alone never certifies a test.
 """
 
 import argparse

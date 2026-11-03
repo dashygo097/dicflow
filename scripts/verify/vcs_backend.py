@@ -1,6 +1,6 @@
 """Independent SystemVerilog/UVM module verification using VCS.
 
-Each completed test calls dicflow_verify_pkg::pass_test(check_count).
+Each completed test calls df_verify_pkg::pass_test(check_count).
 The testbench owns test selection. UVM tops set finish_on_completion=0
 and report completion only after run_test returns,
 so UVM check/report phases run before pass_test is called.

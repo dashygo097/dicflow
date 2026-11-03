@@ -8,3 +8,6 @@ sources:
   - target: all(verify, uvm)
     files:
       - rtl/df_uvm_pkg.sv
+  - target: all(verify, verify_df_verify_pkg)
+    files:
+      - tests/tb_df_verify_pkg.sv
