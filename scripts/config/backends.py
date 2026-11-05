@@ -19,8 +19,6 @@ Optional hooks:
     Return None for one execution, or an empty mapping for no selected executions.
   generate(config, settings, root): shared generated files, relative to build/generated.
   prepare(config, entry, root, directory, source): per-entry generated files.
-    entry.source_root is the effective Bender compilation view.
-  command_values(config, entry, inputs): extra argv values from prepared metadata.
   tools(config, entry): extra tool identities as {name: [command, version_args...]}.
   preflight(config, entry, root): backend-specific execution requirements.
   collect(config, entry, directory, snapshot): publish native tool artifacts.
@@ -63,9 +61,22 @@ def load_backend(root, stage, name, settings):
         raise ConfigError(f"{definition}: format must name a Bender export format")
     description.setdefault("version_args", ["--version"])
     string_list(description["version_args"], "backend version_args")
-    for key in ("inputs", "config_inputs", "technology_inputs", "tracked_environment", "runtime_options", "run_outputs"):
+    for key in (
+        "inputs",
+        "config_inputs",
+        "technology_inputs",
+        "tracked_environment",
+        "runtime_options",
+        "run_outputs",
+    ):
         string_list(description.get(key, []), f"backend {key}")
-    for key in ("requires_top", "inherit_targets", "inherit_design", "run_after_build", "preserve_runs"):
+    for key in (
+        "requires_top",
+        "inherit_targets",
+        "inherit_design",
+        "run_after_build",
+        "preserve_runs",
+    ):
         if key in description and not isinstance(description[key], bool):
             raise ConfigError(f"{definition}: {key} must be boolean")
     description.setdefault("source", "sources.f")
@@ -191,7 +202,11 @@ def context(config, entry, root, stage_dir, inputs, input_digest):
         "model": str(stage_dir / "model" / input_digest),
         "inputs": str(inputs),
         "generated": str(root / "build/generated"),
-        "top": config["design"]["top"] if entry["settings"]["_backend"].get("inherit_design", True) else "",
+        "top": (
+            config["design"]["top"]
+            if entry["settings"]["_backend"].get("inherit_design", True)
+            else entry["settings"].get("top", "")
+        ),
         "jobs": str(config["build"]["jobs"]),
         "script": entry["settings"].get("script", ""),
         "input_digest": input_digest,
@@ -203,10 +218,6 @@ def commands(config, entry, root, stage_dir, inputs, input_digest):
         **entry["settings"],
         **context(config, entry, root, stage_dir, inputs, input_digest),
     }
-    prepared = invoke(entry["settings"], "command_values", config, entry, inputs) or {}
-    if not isinstance(prepared, dict):
-        raise ConfigError("command_values must return a mapping")
-    values.update(prepared)
     definitions = entry["settings"].get(
         "commands", entry["settings"]["_backend"].get("commands")
     )
@@ -227,7 +238,9 @@ def commands(config, entry, root, stage_dir, inputs, input_digest):
     return result
 
 
-def declared_outputs(config, entry, root, stage_dir, inputs, input_digest, *, run=False):
+def declared_outputs(
+    config, entry, root, stage_dir, inputs, input_digest, *, run=False
+):
     values = context(config, entry, root, stage_dir, inputs, input_digest)
     key = "run_outputs" if run else "outputs"
     patterns = entry["settings"].get(key, entry["settings"]["_backend"].get(key, []))

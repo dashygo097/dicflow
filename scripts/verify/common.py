@@ -13,7 +13,6 @@ import sys
 from copy import deepcopy
 from pathlib import Path
 
-import bender
 from project_config import (
     ConfigError,
     atomic_write,
@@ -26,6 +25,7 @@ RUNTIME_OPTIONS = ["seeds", "timeout_seconds"]
 
 # These keys configure a backend; any other table names a Bender target.
 COMMON_OPTIONS = {
+    "top",
     "targets",
     "options",
     "seeds",
@@ -44,7 +44,13 @@ BACKEND_OPTIONS = COMMON_OPTIONS | {
 }
 
 
-def normalize(settings, location, target=None):
+def normalize(settings, location, target=None, *, require_top=True):
+    top = settings.get("top")
+    if require_top or top is not None:
+        if not isinstance(top, str) or not re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_$]*", top
+        ):
+            raise ConfigError(f"{location}.top: expected a testbench module identifier")
     for key in ("options", "targets", "inputs"):
         string_list(settings.setdefault(key, []), f"{location}.{key}")
     seeds = settings.setdefault("seeds", [1])
@@ -86,8 +92,7 @@ def configure(config, settings, root):
     """Flatten backend defaults into independent, target-selected compilations.
 
     Child values replace common values, including lists. Bender target selection
-    owns the sources; Bender syntax trees identify the runnable testbench root.
-    No module name is inferred from a target name or filename.
+    owns the sources; top explicitly names the simulation testbench module.
     """
     tasks = {
         key: value for key, value in settings.items() if key not in BACKEND_OPTIONS
@@ -102,7 +107,7 @@ def configure(config, settings, root):
             )
         reject_unknown(task, COMMON_OPTIONS, f"flow.verify.{name}")
     defaults = {key: value for key, value in settings.items() if key not in tasks}
-    normalize(defaults, "flow.verify")
+    normalize(defaults, "flow.verify", require_top=not tasks)
     if not tasks:
         settings.update(defaults)
         return [settings]
@@ -133,91 +138,6 @@ def variants(config, settings):
             )
         return {name: task for name, task in tasks.items() if name == selected}
     return tasks if tasks else None
-
-
-def syntax_nodes(value):
-    if isinstance(value, dict):
-        yield value
-        for key, child in value.items():
-            # Macro definitions/comments in token trivia are not design instances.
-            if key != "trivia":
-                yield from syntax_nodes(child)
-    elif isinstance(value, list):
-        for child in value:
-            yield from syntax_nodes(child)
-
-
-def discover_top(config, entry, root, *, includes=(), defines=()):
-    """Use Bender's SV parser, never a filename convention or RTL text regex.
-
-    A runnable module testbench has no external ports and is not instantiated
-    by another selected design unit. Require one such root per target/run.
-    Native simulator top options remain an escape hatch for unusual harnesses.
-    """
-    arguments = entry["settings"]["options"]
-    for flag in ("-top", "--top-module"):
-        if flag in arguments:
-            index = arguments.index(flag)
-            if index + 1 == len(arguments):
-                raise ConfigError(f"{flag} requires a module name")
-            return arguments[index + 1]
-    parser_args = [
-        item for target in entry["settings"]["targets"] for item in ("-t", target)
-    ]
-    parser_args.extend(item for path in includes for item in ("-I", str(path)))
-    parser_args.extend(item for define in defines for item in ("-D", define))
-    index = 0
-    while index < len(arguments):
-        argument = arguments[index]
-        if argument in ("-I", "-D"):
-            if index + 1 == len(arguments):
-                raise ConfigError(f"{argument} requires a value")
-            parser_args.extend([argument, arguments[index + 1]])
-            index += 1
-        elif argument.startswith(("-I", "-D")):
-            parser_args.extend([argument[:2], argument[2:]])
-        elif argument.startswith(("+incdir+", "+define+")):
-            prefix = "+incdir+" if argument.startswith("+incdir+") else "+define+"
-            for value in argument[len(prefix) :].split("+"):
-                parser_args.extend(["-I" if prefix == "+incdir+" else "-D", value])
-        index += 1
-    # Include technology targets as well as verification target flags.
-    targets = config["technology"][entry["technology"]]["targets"]
-    parser_args.extend(item for target in targets for item in ("-t", target))
-    syntax = json.loads(
-        bender.command(
-            Path(entry["source_root"]),
-            "pickle",
-            "--ast-json",
-            *parser_args,
-        )
-    )
-    modules, instantiated = set(), set()
-    for tree in syntax:
-        for member in tree["root"].get("members", []):
-            if member.get("kind") in {"ModuleDeclaration", "ProgramDeclaration"}:
-                header = member["header"]
-                if not header.get("ports", {}).get("ports"):
-                    modules.add(header["name"]["text"])
-        instantiated.update(
-            node["type"]["text"]
-            for node in syntax_nodes(tree)
-            if node.get("kind") == "HierarchyInstantiation"
-        )
-    candidates = sorted(modules - instantiated)
-    if len(candidates) != 1:
-        raise ConfigError(
-            "Verification target must select one uninstantiated testbench without "
-            "external ports; found: "
-            + (", ".join(candidates) or "none")
-            + ". Refine the Bender target or use a native simulator top option."
-        )
-    return candidates[0]
-
-
-def command_values(config, entry, inputs):
-    metadata = json.loads((inputs / "verification.json").read_text())
-    return {"verification_top": metadata["top"]}
 
 
 def collect(config, entry, directory, snapshot):

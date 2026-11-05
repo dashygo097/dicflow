@@ -19,8 +19,14 @@ import generators
 from backends import commands, context, declared_outputs
 from backends import environment as backend_environment
 from backends import invoke, technology_inputs
-from project_config import (ConfigError, atomic_write, config_digest,
-                            generator_names, load_config, project_lock)
+from project_config import (
+    ConfigError,
+    atomic_write,
+    config_digest,
+    generator_names,
+    load_config,
+    project_lock,
+)
 
 ROOT = Path(os.environ.get("PROJECT_ROOT", os.getcwd())).resolve()
 GENERATED = ROOT / "build/generated"
@@ -28,10 +34,13 @@ GENERATED = ROOT / "build/generated"
 
 def sha256(path):
     if path.is_dir():
-        return config_digest({
-            str(file.relative_to(path)): sha256(file)
-            for file in sorted(path.rglob("*")) if file.is_file()
-        })
+        return config_digest(
+            {
+                str(file.relative_to(path)): sha256(file)
+                for file in sorted(path.rglob("*"))
+                if file.is_file()
+            }
+        )
     value = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -134,9 +143,12 @@ def tool_identity(command, arguments):
 
 def build_entry(entry):
     runtime = entry["settings"]["_backend"].get("runtime_options", [])
-    return {**entry, "settings": {
-        key: value for key, value in entry["settings"].items() if key not in runtime
-    }}
+    return {
+        **entry,
+        "settings": {
+            key: value for key, value in entry["settings"].items() if key not in runtime
+        },
+    }
 
 
 def stage_configuration(config, entry):
@@ -174,12 +186,17 @@ def entries(config):
             if variants is None:
                 variants = {None: settings}
             if not isinstance(variants, dict):
-                raise ConfigError(f"{stage}.{tool}: variants must return a settings mapping")
+                raise ConfigError(
+                    f"{stage}.{tool}: variants must return a settings mapping"
+                )
             for name, variant in variants.items():
                 if name is not None and (
-                    not isinstance(name, str) or not name
-                    or Path(name).name != name or name in {".", ".."}
-                    or "\n" in name or "\r" in name
+                    not isinstance(name, str)
+                    or not name
+                    or Path(name).name != name
+                    or name in {".", ".."}
+                    or "\n" in name
+                    or "\r" in name
                 ):
                     raise ConfigError(f"{stage}.{tool}: invalid execution name: {name}")
                 if not isinstance(variant, dict) or "_backend" not in variant:
@@ -193,10 +210,15 @@ def entries(config):
                     }
                     if name is not None:
                         entry["variant"] = name
-                    entry["id"] = "/".join([
-                        stage, technology, tool, *([name] if name else []),
-                        config_digest(stage_configuration(config, entry))[:12],
-                    ])
+                    entry["id"] = "/".join(
+                        [
+                            stage,
+                            technology,
+                            tool,
+                            *([name] if name else []),
+                            config_digest(stage_configuration(config, entry))[:12],
+                        ]
+                    )
                     result.append(entry)
     return result
 
@@ -338,10 +360,14 @@ def publish_views(config):
                 snapshot["input_digest"] if snapshot else "",
             )
             for name, pattern in views.items():
-                destination = "/".join([
-                    entry["technology"], entry["tool"],
-                    *([entry["variant"]] if "variant" in entry else []), name,
-                ])
+                destination = "/".join(
+                    [
+                        entry["technology"],
+                        entry["tool"],
+                        *([entry["variant"]] if "variant" in entry else []),
+                        name,
+                    ]
+                )
                 producers.setdefault(name, []).append(destination)
                 if valid:
                     source = Path(pattern.format_map(values))
@@ -378,11 +404,17 @@ def prepare(config, update=False, stages=None):
     updates = {"generator:" + name: outputs for name, outputs in generated.items()}
     for entry in active:
         owner = "backend:" + entry["stage"] + ":" + entry["tool"]
-        outputs = invoke(entry["settings"], "generate", config, entry["settings"], ROOT) or {}
+        outputs = (
+            invoke(entry["settings"], "generate", config, entry["settings"], ROOT) or {}
+        )
         if owner in updates and updates[owner] != outputs:
-            raise ConfigError("Technology-dependent shared generator outputs must agree: " + owner)
+            raise ConfigError(
+                "Technology-dependent shared generator outputs must agree: " + owner
+            )
         updates[owner] = outputs
-    generators.publish(ROOT, updates, config["_generation_owners"], complete=config["_complete"])
+    generators.publish(
+        ROOT, updates, config["_generation_owners"], complete=config["_complete"]
+    )
     # Backend-generated HDL must exist before Bender resolves/globs sources.
     provenance = bender.resolve(config, ROOT, update)
     package_state = bender.packages(ROOT, config["build"]["reproducible"])
@@ -415,18 +447,27 @@ def prepare(config, update=False, stages=None):
         wanted = generator_names(config, entry["settings"])
         source_groups = [
             bender.source(GENERATED, group)
-            for name, groups in declared_sources.items() if name in wanted for group in groups
+            for name, groups in declared_sources.items()
+            if name in wanted
+            for group in groups
         ]
         source_groups.extend(
             bender.source(GENERATED, group)
             for group in backend.get("generated_sources", [])
         )
         project_sources = (
-            config["design"]["sources"] if backend.get("inherit_design", True)
+            config["design"]["sources"]
+            if backend.get("inherit_design", True)
             else entry["settings"].get("sources", [])
         )
         compilation_root = (
-            bender.compilation_root(config, ROOT, active_targets, source_groups, project_sources=project_sources)
+            bender.compilation_root(
+                config,
+                ROOT,
+                active_targets,
+                source_groups,
+                project_sources=project_sources,
+            )
             if backend["format"]
             else ROOT
         )
@@ -443,10 +484,7 @@ def prepare(config, update=False, stages=None):
         script = directory / backend["source"]
         exports = {backend["source"]: export} if backend["format"] else {}
         prepared = (
-            invoke(
-                entry["settings"], "prepare", config,
-                {**entry, "source_root": str(compilation_root)}, ROOT, directory, script,
-            )
+            invoke(entry["settings"], "prepare", config, entry, ROOT, directory, script)
             or {}
         )
         for name, content in prepared.items():
@@ -543,18 +581,30 @@ def prepare(config, update=False, stages=None):
         target = make_path(stamp)
         if backend.get("run_after_build"):
             target = make_path(stage_path(entry) / ".run", target=True)
-            make_lines.extend([
-                ".PHONY: " + target,
-                target + ": " + make_path(stamp),
-                "\t@" + make_command([sys.executable, str(Path(__file__)), "execute-run", str(snapshot_path)]),
-            ])
+            make_lines.extend(
+                [
+                    ".PHONY: " + target,
+                    target + ": " + make_path(stamp),
+                    "\t@"
+                    + make_command(
+                        [
+                            sys.executable,
+                            str(Path(__file__)),
+                            "execute-run",
+                            str(snapshot_path),
+                        ]
+                    ),
+                ]
+            )
         by_stage[entry["stage"]].append(target)
     for stage, stamps in by_stage.items():
-        make_lines.extend([
-            ".PHONY: " + stage + "-build",
-            stage + "-build: " + " ".join(build_targets[stage]),
-            stage + ": " + " ".join(stamps),
-        ])
+        make_lines.extend(
+            [
+                ".PHONY: " + stage + "-build",
+                stage + "-build: " + " ".join(build_targets[stage]),
+                stage + ": " + " ".join(stamps),
+            ]
+        )
         if not stamps:
             make_lines.append(
                 "\t@echo 'ERROR: no backend configured for " + stage + "' >&2; exit 2"
@@ -564,7 +614,9 @@ def prepare(config, update=False, stages=None):
         make_lines.append(f".PHONY: {stage}-run")
         make_lines.append(f"{stage}-run: {stage}")
         candidates = [entry for entry in active if entry["stage"] == stage]
-        if candidates and all(item["settings"]["_backend"].get("run_after_build") for item in candidates):
+        if candidates and all(
+            item["settings"]["_backend"].get("run_after_build") for item in candidates
+        ):
             continue
         if len(candidates) == 1:
             runtime_input = GENERATED / "flows" / candidates[0]["id"] / "inputs.json"
@@ -710,7 +762,9 @@ def execute(snapshot_path, run=False):
     snapshot = json.loads(snapshot_path.read_text())
     config = load_config(ROOT / "Project.toml", ROOT, action=snapshot["entry"]["stage"])
     check_framework(config)
-    candidates = [item for item in entries(config) if build_entry(item) == snapshot["entry"]]
+    candidates = [
+        item for item in entries(config) if build_entry(item) == snapshot["entry"]
+    ]
     if len(candidates) != 1:
         raise ConfigError("Stale or unrecognized stage descriptor; rerun make")
     entry = candidates[0]
@@ -812,10 +866,15 @@ def execute(snapshot_path, run=False):
             preflight(config, snapshot)
             if run:
                 if not check_cached_outputs(config, entry, snapshot["input_digest"]):
-                    raise ConfigError("Compiled artifacts changed; rebuild before running")
+                    raise ConfigError(
+                        "Compiled artifacts changed; rebuild before running"
+                    )
                 runtime = invoke(
-                    entry["settings"], "run", config,
-                    {**entry, "run_directory": str(directory)}, stage_path(entry)
+                    entry["settings"],
+                    "run",
+                    config,
+                    {**entry, "run_directory": str(directory)},
+                    stage_path(entry),
                 )
                 if not runtime:
                     raise ConfigError("This backend does not implement a run action")
@@ -852,12 +911,25 @@ def execute(snapshot_path, run=False):
                 # Never certify a run whose inputs were modified while EDA ran.
                 preflight(config, snapshot)
                 expected = (
-                    [summary, *declared_outputs(config, entry, ROOT, directory,
-                        snapshot_path.parent, snapshot["input_digest"], run=True)]
-                    if run else artifact_paths(config, entry)
+                    [
+                        summary,
+                        *declared_outputs(
+                            config,
+                            entry,
+                            ROOT,
+                            directory,
+                            snapshot_path.parent,
+                            snapshot["input_digest"],
+                            run=True,
+                        ),
+                    ]
+                    if run
+                    else artifact_paths(config, entry)
                 )
                 for path in expected:
-                    if not path.exists() or (path.is_file() and not path.stat().st_size):
+                    if not path.exists() or (
+                        path.is_file() and not path.stat().st_size
+                    ):
                         raise ConfigError(
                             "Tool did not create required artifact: " + str(path)
                         )
@@ -920,13 +992,19 @@ def main():
                 and stage not in config["flow"]
             ):
                 raise ConfigError(f"No configured stage: {stage}")
-            goals = config["workflow"]["stages"] if action == "workflow" else [args.action if args.action.endswith("-build") else action]
+            goals = (
+                config["workflow"]["stages"]
+                if action == "workflow"
+                else [args.action if args.action.endswith("-build") else action]
+            )
             if args.action == "config":
                 stages = None
             elif args.action == "deps-update":
                 stages = []
             else:
-                stages = [goal.removesuffix("-build").removesuffix("-run") for goal in goals]
+                stages = [
+                    goal.removesuffix("-build").removesuffix("-run") for goal in goals
+                ]
             updated = os.environ.get("PROJECT_BOOTSTRAP_LOCK")
             if updated and sha256(ROOT / "Bender.lock") != updated:
                 raise ConfigError(
