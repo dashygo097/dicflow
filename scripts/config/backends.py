@@ -15,8 +15,12 @@ inherit_targets=True uses the prerequisite's source targets (e.g. equivalence).
 
 Optional hooks:
   configure(config, settings, root): validate/normalize backend-owned settings.
+  variants(config, settings): optional {name: settings} for independent executions.
+    Return None for one execution, or an empty mapping for no selected executions.
   generate(config, settings, root): shared generated files, relative to build/generated.
   prepare(config, entry, root, directory, source): per-entry generated files.
+    entry.source_root is the effective Bender compilation view.
+  command_values(config, entry, inputs): extra argv values from prepared metadata.
   tools(config, entry): extra tool identities as {name: [command, version_args...]}.
   preflight(config, entry, root): backend-specific execution requirements.
   collect(config, entry, directory, snapshot): publish native tool artifacts.
@@ -199,6 +203,10 @@ def commands(config, entry, root, stage_dir, inputs, input_digest):
         **entry["settings"],
         **context(config, entry, root, stage_dir, inputs, input_digest),
     }
+    prepared = invoke(entry["settings"], "command_values", config, entry, inputs) or {}
+    if not isinstance(prepared, dict):
+        raise ConfigError("command_values must return a mapping")
+    values.update(prepared)
     definitions = entry["settings"].get(
         "commands", entry["settings"]["_backend"].get("commands")
     )

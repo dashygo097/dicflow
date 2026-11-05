@@ -19,7 +19,8 @@ import generators
 from backends import commands, context, declared_outputs
 from backends import environment as backend_environment
 from backends import invoke, technology_inputs
-from project_config import project_lock, generator_names, ConfigError, atomic_write, config_digest, load_config
+from project_config import (ConfigError, atomic_write, config_digest,
+                            generator_names, load_config, project_lock)
 
 ROOT = Path(os.environ.get("PROJECT_ROOT", os.getcwd())).resolve()
 GENERATED = ROOT / "build/generated"
@@ -169,26 +170,34 @@ def entries(config):
     result = []
     for stage, tools in config["flow"].items():
         for tool, settings in tools.items():
-            for technology in settings["technologies"]:
-                result.append(
-                    {
-                        "id": stage
-                        + "/"
-                        + technology
-                        + "/"
-                        + tool
-                        + "/"
-                        + config_digest(
-                            stage_configuration(
-                                config, {"settings": settings, "technology": technology}
-                            )
-                        )[:12],
+            variants = invoke(settings, "variants", config, settings)
+            if variants is None:
+                variants = {None: settings}
+            if not isinstance(variants, dict):
+                raise ConfigError(f"{stage}.{tool}: variants must return a settings mapping")
+            for name, variant in variants.items():
+                if name is not None and (
+                    not isinstance(name, str) or not name
+                    or Path(name).name != name or name in {".", ".."}
+                    or "\n" in name or "\r" in name
+                ):
+                    raise ConfigError(f"{stage}.{tool}: invalid execution name: {name}")
+                if not isinstance(variant, dict) or "_backend" not in variant:
+                    raise ConfigError(f"{stage}.{tool}: invalid execution settings")
+                for technology in variant["technologies"]:
+                    entry = {
                         "stage": stage,
                         "tool": tool,
                         "technology": technology,
-                        "settings": settings,
+                        "settings": variant,
                     }
-                )
+                    if name is not None:
+                        entry["variant"] = name
+                    entry["id"] = "/".join([
+                        stage, technology, tool, *([name] if name else []),
+                        config_digest(stage_configuration(config, entry))[:12],
+                    ])
+                    result.append(entry)
     return result
 
 
@@ -197,13 +206,16 @@ def provider_for(config, entry):
     if not reference:
         return None
     stage, tool = reference.split(".")
-    return next(
+    candidates = [
         candidate
         for candidate in entries(config)
         if candidate["stage"] == stage
         and candidate["tool"] == tool
         and candidate["technology"] == entry["technology"]
-    )
+    ]
+    if len(candidates) != 1:
+        raise ConfigError(f"Prerequisite {reference} must select exactly one execution")
+    return candidates[0]
 
 
 def targets_for(config, entry):
@@ -326,7 +338,10 @@ def publish_views(config):
                 snapshot["input_digest"] if snapshot else "",
             )
             for name, pattern in views.items():
-                destination = f"{entry['technology']}/{entry['tool']}/{name}"
+                destination = "/".join([
+                    entry["technology"], entry["tool"],
+                    *([entry["variant"]] if "variant" in entry else []), name,
+                ])
                 producers.setdefault(name, []).append(destination)
                 if valid:
                     source = Path(pattern.format_map(values))
@@ -428,7 +443,10 @@ def prepare(config, update=False, stages=None):
         script = directory / backend["source"]
         exports = {backend["source"]: export} if backend["format"] else {}
         prepared = (
-            invoke(entry["settings"], "prepare", config, entry, ROOT, directory, script)
+            invoke(
+                entry["settings"], "prepare", config,
+                {**entry, "source_root": str(compilation_root)}, ROOT, directory, script,
+            )
             or {}
         )
         for name, content in prepared.items():
@@ -754,6 +772,7 @@ def execute(snapshot_path, run=False):
         + entry["technology"]
         + "::"
         + entry["tool"]
+        + ("::" + entry["variant"] if "variant" in entry else "")
         + "] "
         + ("Running program" if run else "Executing stage"),
         flush=True,
