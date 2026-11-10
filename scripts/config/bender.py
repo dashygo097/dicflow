@@ -67,10 +67,24 @@ def compilation_root(config, root, targets, generated_sources, *, project_source
     dependencies = json.loads(command(root, "sources", "-f", *arguments))
     # These groups are already resolved by the root's locked Bender graph. The
     # compilation view has no dependencies and cannot resolve newer revisions.
-    groups = [
-        {key: group[key] for key in ("files", "include_dirs", "defines", "independent")}
-        for group in dependencies
-    ]
+    # Keep dependency ordering; generated inputs precede their project consumers.
+    project_packages = {
+        group["package"]
+        for group in json.loads(command(root, "sources", "-f", "--no-deps", *arguments))
+    }
+    dependency_groups, project_groups = [], []
+    for group in dependencies:
+        selected = (
+            project_groups
+            if group["package"] in project_packages
+            else dependency_groups
+        )
+        selected.append(
+            {
+                key: group[key]
+                for key in ("files", "include_dirs", "defines", "independent")
+            }
+        )
     identity = hashlib.sha256(json.dumps(sorted(set(targets))).encode()).hexdigest()[
         :12
     ]
@@ -79,8 +93,9 @@ def compilation_root(config, root, targets, generated_sources, *, project_source
         "package": {"name": "dicflow_build"},
         "frozen": True,
         "sources": [
-            *groups,
+            *dependency_groups,
             *generated_sources,
+            *project_groups,
             *(source(root, group) for group in project_sources),
         ],
     }
