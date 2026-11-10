@@ -15,6 +15,9 @@ run_after_build schedules a run for each request; runtime_options are excluded
 from compilation fingerprints. preserve_runs retains each attempt, and
 run_outputs declares required machine-readable reports.
 inherit_targets=True uses the prerequisite's source targets (e.g. equivalence).
+version_exit_codes defaults to [0]. Accepting a nonzero version-query status
+requires version_pattern to identify the expected tool banner. This policy never
+applies to build/run command exit codes.
 
 Optional hooks:
   configure(config, settings, root): validate/normalize backend-owned settings.
@@ -33,6 +36,7 @@ Generation hooks return {relative_path: text}. Shared outputs must agree across
 entries. Commands are argv arrays; arbitrary options remain backend-owned.
 """
 
+import re
 from pathlib import Path
 
 import extensions
@@ -65,6 +69,32 @@ def load_backend(root, stage, name, settings):
         raise ConfigError(f"{definition}: format must name a Bender export format")
     description.setdefault("version_args", ["--version"])
     string_list(description["version_args"], "backend version_args")
+    exit_codes = description.get("version_exit_codes", [0])
+    if (
+        not isinstance(exit_codes, list)
+        or not exit_codes
+        or any(type(code) is not int or not 0 <= code <= 255 for code in exit_codes)
+        or len(exit_codes) != len(set(exit_codes))
+    ):
+        raise ConfigError(
+            f"{definition}: version_exit_codes must be distinct exit statuses (0..255)"
+        )
+    pattern = description.get("version_pattern")
+    if pattern is not None:
+        if not isinstance(pattern, str) or not pattern:
+            raise ConfigError(
+                f"{definition}: version_pattern must be a non-empty regex"
+            )
+        try:
+            re.compile(pattern)
+        except re.error as error:
+            raise ConfigError(
+                f"{definition}: invalid version_pattern: {error}"
+            ) from error
+    if any(exit_codes) and pattern is None:
+        raise ConfigError(
+            f"{definition}: nonzero version_exit_codes require version_pattern"
+        )
     for key in (
         "inputs",
         "config_inputs",

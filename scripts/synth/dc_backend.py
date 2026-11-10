@@ -5,6 +5,10 @@ from backends import configuration_tcl, technology_inputs
 BACKEND = {
     "tool": "dc_shell",
     "version_args": ["-version"],
+    # Some DC releases return 1 for a successful -version query. Identify DC
+    # explicitly before accepting it; synthesis itself still requires exit 0.
+    "version_exit_codes": [0, 1],
+    "version_pattern": r"(?m)^dc_shell[ \t]+version[ \t]+-[ \t]+[A-Z]-[0-9]{4}\.[0-9]{2}\S*[ \t]*$",
     "format": "synopsys",
     "requires_top": True,
     "config_inputs": ["constraints"],

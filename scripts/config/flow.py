@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -106,7 +107,7 @@ def synchronize_outputs(directory, contents):
     write_json(inventory, sorted(contents))
 
 
-def tool_identity(command, arguments):
+def tool_identity(command, arguments, *, exit_codes=(0,), pattern=None):
     executable = shutil.which(command)
     if executable is None:
         return {"command": command, "available": False}
@@ -125,20 +126,20 @@ def tool_identity(command, arguments):
             "path": str(Path(executable).resolve()),
             "error": str(error),
         }
+    output = result.stdout.strip()
+    error = None
+    if result.returncode not in exit_codes:
+        error = f"version query exited {result.returncode}: {output}"
+    elif pattern is not None and re.search(pattern, output) is None:
+        error = f"version output did not match the backend identity pattern: {output}"
     return {
         "command": command,
-        "available": result.returncode == 0,
+        "available": error is None,
         "path": str(Path(executable).resolve()),
         "executable_sha256": sha256(Path(executable)),
-        "version": result.stdout.strip(),
+        "version": output,
         "version_exit_code": result.returncode,
-        **(
-            {
-                "error": f"version query exited {result.returncode}: {result.stdout.strip()}"
-            }
-            if result.returncode
-            else {}
-        ),
+        **({"error": error} if error is not None else {}),
     }
 
 
@@ -526,7 +527,12 @@ def prepare(config, update=False, stages=None):
                 )
             atomic_write(directory / name, content)
         tools = {
-            backend["tool"]: tool_identity(backend["tool"], backend["version_args"])
+            backend["tool"]: tool_identity(
+                backend["tool"],
+                backend["version_args"],
+                exit_codes=backend.get("version_exit_codes", [0]),
+                pattern=backend.get("version_pattern"),
+            )
         }
         tool_commands = {
             **backend.get("tools", {}),
