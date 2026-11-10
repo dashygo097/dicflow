@@ -4,9 +4,10 @@ proc project_dc_get {table key fallback} {
   return $fallback
 }
 
-proc project_dc_paths {paths} {
+proc project_dc_paths {paths {catalog {}}} {
   set result {}
   foreach path $paths {
+    if {[dict exists $catalog $path]} { set path [dict get $catalog $path] }
     lappend result [file normalize [file join $::env(PROJECT_ROOT) $path]]
   }
   return $result
@@ -18,13 +19,14 @@ proc project_dc_config {project} {
   }
   set tech [dict get $project technology dc]
   set flow [dict get $project flow]
-  set target [project_dc_paths [dict get $tech target_libraries]]
+  set catalog [project_dc_get [dict get $project technology] libraries {}]
+  set target [project_dc_paths [dict get $tech target_libraries] $catalog]
   if {[llength $target] == 0} { error "dc.target_libraries must not be empty" }
-  set link [project_dc_paths [project_dc_get $tech link_libraries {}]]
+  set link [project_dc_paths [project_dc_get $tech link_libraries {}] $catalog]
   set pairs {}
   foreach pair [project_dc_get $tech library_pairs {}] {
-    set maximum [lindex [project_dc_paths [list [dict get $pair max]]] 0]
-    set minimum [lindex [project_dc_paths [list [dict get $pair min]]] 0]
+    set maximum [lindex [project_dc_paths [list [dict get $pair max]] $catalog] 0]
+    set minimum [lindex [project_dc_paths [list [dict get $pair min]] $catalog] 0]
     if {[lsearch -exact [concat $target $link] $maximum] < 0} {
       error "library_pairs.max must reference a target or link library: $maximum"
     }
@@ -41,7 +43,7 @@ proc project_dc_config {project} {
   return [dict create \
     RTL_TOP [dict get $project design top] \
     SYNTH_TARGET_LIBRARIES $target SYNTH_LINK_LIBRARIES $link \
-    SYNTH_SYNTHETIC_LIBRARIES [project_dc_paths [project_dc_get $tech synthetic_libraries {}]] \
+    SYNTH_SYNTHETIC_LIBRARIES [project_dc_paths [project_dc_get $tech synthetic_libraries {}] $catalog] \
     SYNTH_MIN_LIBRARY_PAIRS $pairs \
     SYNTH_SETUP_SCRIPTS [project_dc_paths [project_dc_get $tech setup_scripts {}]] \
     SYNTH_COMPILE $compile SYNTH_PRESERVE_HIERARCHY $preserve_hierarchy \

@@ -1,6 +1,6 @@
 """Design Compiler integration. Synthesis policy is implemented in dc.tcl."""
 
-from backends import configuration_tcl
+from backends import configuration_tcl, technology_inputs
 
 BACKEND = {
     "tool": "dc_shell",
@@ -23,14 +23,14 @@ BACKEND = {
         "dc.setup_scripts",
     ],
     "commands": [["dc_shell", "{options}", "-f", "{script}"]],
-    "outputs": [
-        "{reports}/summary.rpt",
-        "{results}/{top}.v",
-        "{results}/{top}.ddc",
-        "{results}/{top}.sdc",
-        "{results}/{top}.svf",
-        "{results}/synthesis.tcl",
-    ],
+    "outputs": {
+        "summary": "{reports}/summary.rpt",
+        "netlist": "{results}/{top}.v",
+        "ddc": "{results}/{top}.ddc",
+        "constraints": "{results}/{top}.sdc",
+        "guidance": "{results}/{top}.svf",
+        "synthesis_contract": "{results}/synthesis.tcl",
+    },
     "defaults": {
         "compile": "ultra",
         "preserve_hierarchy": True,
@@ -41,4 +41,15 @@ BACKEND = {
 
 
 def prepare(config, entry, root, directory, source):
-    return {"backend.tcl": configuration_tcl(config, entry)}
+    technology = config["technology"][entry["technology"]]
+    paths = set(technology_inputs(technology, BACKEND["technology_inputs"]))
+    selected = {
+        "dc": technology.get("dc", {}),
+        "libraries": {
+            alias: path
+            for alias, path in technology.get("libraries", {}).items()
+            if path in paths
+        },
+    }
+    scoped = {**config, "technology": {entry["technology"]: selected}}
+    return {"backend.tcl": configuration_tcl(scoped, entry)}

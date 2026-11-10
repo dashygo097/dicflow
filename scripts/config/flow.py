@@ -18,11 +18,12 @@ import extensions
 import generators
 from backends import commands, context, declared_outputs
 from backends import environment as backend_environment
-from backends import invoke, technology_inputs
+from backends import invoke, named_outputs, technology_inputs
 from project_config import (
     ConfigError,
     atomic_write,
     config_digest,
+    flow_reference,
     generator_names,
     load_config,
     project_lock,
@@ -168,7 +169,9 @@ def stage_configuration(config, entry):
             value = value.get(key) if isinstance(value, dict) else None
         consumed[selector] = value
     return {
-        "design": config["design"] if backend.get("inherit_design", True) else {},
+        "design": config["design"]
+        if backend.get("inherit_design", True) or backend.get("requires_top", False)
+        else {},
         "flow": settings,
         "technology": selected,
         "configuration": consumed,
@@ -227,13 +230,14 @@ def provider_for(config, entry):
     reference = entry["settings"].get("requires")
     if not reference:
         return None
-    stage, tool = reference.split(".")
+    stage, tool, variant = flow_reference(reference)
     candidates = [
         candidate
         for candidate in entries(config)
         if candidate["stage"] == stage
         and candidate["tool"] == tool
         and candidate["technology"] == entry["technology"]
+        and (variant is None or candidate.get("variant") == variant)
     ]
     if len(candidates) != 1:
         raise ConfigError(f"Prerequisite {reference} must select exactly one execution")
@@ -284,6 +288,8 @@ def inputs_for(config, entry, groups):
     for path in technology_inputs(technology, selectors):
         files.add(Path(path) if Path(path).is_absolute() else ROOT / path)
     files.update(Path(asset["path"]) for asset in technology.get("assets", {}).values())
+    # Canonical paths prevent ../ and symlinks from bypassing external-asset pins.
+    files = {path.resolve() for path in files}
     return {
         str(path): sha256(path) if path.is_file() else None for path in sorted(files)
     }
@@ -319,6 +325,24 @@ def check_cached_outputs(config, entry, input_digest):
             record["status"] == "passed"
             and record["inputs"]["input_digest"] == input_digest
             and stamp.read_text().strip() == input_digest
+            and record.get("output_roles", {})
+            == named_outputs(
+                config,
+                entry,
+                ROOT,
+                directory,
+                GENERATED / "flows" / entry["id"],
+                input_digest,
+            )
+            and record.get("design_top")
+            == context(
+                config,
+                entry,
+                ROOT,
+                directory,
+                GENERATED / "flows" / entry["id"],
+                input_digest,
+            )["top"]
             and record["artifacts"]
             and set(record["artifacts"])
             == {str(path) for path in artifact_paths(config, entry)}
@@ -385,16 +409,20 @@ def publish_views(config):
 
 def prepare(config, update=False, stages=None):
     resolved = entries(config)
-    selected = set()
+    selected, visiting = set(), set()
     active = []
 
     def select(entry):
+        if entry["id"] in visiting:
+            raise ConfigError("Cyclic execution dependency: " + entry["id"])
         if entry["id"] in selected:
             return
-        selected.add(entry["id"])
+        visiting.add(entry["id"])
         provider = provider_for(config, entry)
         if provider:
             select(provider)
+        visiting.remove(entry["id"])
+        selected.add(entry["id"])
         active.append(entry)
 
     for entry in resolved:
@@ -561,7 +589,12 @@ def prepare(config, update=False, stages=None):
         dependency = ""
         provider = provider_for(config, entry)
         if provider:
-            dependency = make_path(stage_path(provider) / ".done")
+            provider_stamp = stage_path(provider) / ".done"
+            dependency = make_path(provider_stamp)
+            # Cache validity follows the dependency graph, even on Make versions
+            # whose timestamps cannot distinguish rebuilds within one second.
+            if not provider_stamp.is_file():
+                stamp.unlink(missing_ok=True)
         # Dependencies are content inventories refreshed before Make is invoked.
         # This catches added/deleted files, restored mtimes and changed tools.
         make_lines.extend(
@@ -851,6 +884,30 @@ def execute(snapshot_path, run=False):
                     != snapshot["dependency"]["input_digest"]
                 ):
                     raise ConfigError("Prerequisite build is not current")
+                roles = named_outputs(
+                    config,
+                    provider,
+                    ROOT,
+                    dependency,
+                    GENERATED / "flows" / provider["id"],
+                    record["inputs"]["input_digest"],
+                )
+                if record.get("output_roles", {}) != roles:
+                    raise ConfigError(
+                        "Prerequisite artifact roles changed; rebuild provider"
+                    )
+                for alias, role in (
+                    entry["settings"]["_backend"].get("input_roles", {}).items()
+                ):
+                    path = roles.get(role)
+                    if (
+                        not path
+                        or path not in record["artifacts"]
+                        or not Path(path).is_file()
+                    ):
+                        raise ConfigError(f"Missing prerequisite artifact role: {role}")
+                    environment["STAGE_INPUT_" + alias.upper()] = path
+                environment["DEPENDENCY_TOP"] = record.get("design_top", "")
                 snapshot = dict(
                     snapshot,
                     dependency_inputs={
@@ -963,6 +1020,24 @@ def execute(snapshot_path, run=False):
                     "inputs": snapshot,
                     "configuration": config,
                     "artifacts": artifacts,
+                    "design_top": context(
+                        config,
+                        entry,
+                        ROOT,
+                        directory,
+                        snapshot_path.parent,
+                        snapshot["input_digest"],
+                    )["top"],
+                    "output_roles": named_outputs(
+                        config,
+                        entry,
+                        ROOT,
+                        directory,
+                        snapshot_path.parent,
+                        snapshot["input_digest"],
+                    )
+                    if not run and status == 0
+                    else {},
                     "error": error,
                 },
             )

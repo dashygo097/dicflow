@@ -3,14 +3,14 @@
 HDL collection, target filtering and dependency resolution belong to Bender.
 """
 
-import hashlib
 import fcntl
-from contextlib import contextmanager
+import hashlib
 import json
 import math
 import os
 import re
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 try:
@@ -117,7 +117,7 @@ def project_lock(root):
 
 
 def select_flows(raw, root, action):
-    from backends import load_backend
+    from backends import invoke, load_backend
 
     flow = raw.get("flow", {})
     if not isinstance(flow, dict):
@@ -130,30 +130,27 @@ def select_flows(raw, root, action):
         requested = string_list(workflow.get("stages", []), "workflow.stages")
     else:
         requested = [action.removesuffix("-build").removesuffix("-run")]
-    selected, visiting = {}, set()
+    selected = {}
 
     def visit(stage, name):
-        reference = stage + "." + name
-        if reference in visiting:
-            raise ConfigError("Cyclic flow dependency: " + reference)
         if name in selected.get(stage, {}):
             return
         try:
             settings = flow[stage][name]
         except (KeyError, TypeError):
-            raise ConfigError("Unknown flow: " + reference)
+            raise ConfigError(f"Unknown flow: {stage}.{name}")
         if not isinstance(settings, dict):
-            raise ConfigError(reference + ": expected a backend table")
-        visiting.add(reference)
+            raise ConfigError(f"{stage}.{name}: expected a backend table")
         settings = load_backend(root, stage, name, settings)
-        prerequisite = settings.get("requires")
-        if prerequisite:
-            parts = prerequisite.split(".")
-            if len(parts) != 2:
-                raise ConfigError("requires: expected stage.profile")
-            visit(*parts)
+        # Insert before traversing. Actual execution-node cycles are checked after
+        # backend normalization, so independent cases can depend on one another.
         selected.setdefault(stage, {})[name] = settings
-        visiting.remove(reference)
+        references = invoke(settings, "prerequisites", settings)
+        if references is None:
+            references = [settings["requires"]] if settings.get("requires") else []
+        for reference in string_list(references, "backend prerequisites"):
+            parent_stage, parent_name, _ = flow_reference(reference)
+            visit(parent_stage, parent_name)
 
     for stage in requested:
         if stage not in flow or not isinstance(flow[stage], dict) or not flow[stage]:
@@ -165,12 +162,15 @@ def select_flows(raw, root, action):
 
 def generator_names(config, settings):
     available = {
-        name for name, value in config.items()
+        name
+        for name, value in config.items()
         if isinstance(value, dict) and "_generator" in value
     }
     roots = settings.get("generators")
     if roots is None:
-        roots = list(available) if settings["_backend"].get("inherit_design", True) else []
+        roots = (
+            list(available) if settings["_backend"].get("inherit_design", True) else []
+        )
     roots = set(roots) | {
         selector.split(".")[0]
         for selector in settings["_backend"].get("config_inputs", [])
@@ -218,21 +218,28 @@ def load_config(config_path, project_root, *, action=None):
     owners += [
         "backend:" + stage + ":" + name
         for stage, profiles in raw.get("flow", {}).items()
-        if isinstance(profiles, dict) for name in profiles
+        if isinstance(profiles, dict)
+        for name in profiles
     ]
     needed = set()
     inherit_design = action in (None, "config")
     for profiles in selected.values():
         for settings in profiles.values():
             inherits = settings["_backend"].get("inherit_design", True)
-            inherit_design |= inherits
-            needed.update(settings.get("generators", list(all_extensions) if inherits else []))
+            inherit_design |= inherits or settings["_backend"].get(
+                "requires_top", False
+            )
+            needed.update(
+                settings.get("generators", list(all_extensions) if inherits else [])
+            )
             needed.update(
                 selector.split(".")[0]
                 for selector in settings["_backend"].get("config_inputs", [])
                 if selector.split(".")[0] in all_extensions
             )
-    extensions = {name: value for name, value in all_extensions.items() if name in needed}
+    extensions = {
+        name: value for name, value in all_extensions.items() if name in needed
+    }
     missing = needed - set(extensions)
     if missing:
         raise ConfigError("Missing generator: " + ", ".join(sorted(missing)))
@@ -373,33 +380,6 @@ def load_config(config_path, project_root, *, action=None):
                 if technology not in technologies:
                     raise ConfigError(f"Unknown technology: {technology}")
             normalized_flow[stage][name] = settings
-    visiting, visited = set(), set()
-
-    def visit(reference):
-        if reference in visiting:
-            raise ConfigError(f"Cyclic flow dependency: {reference}")
-        if reference in visited:
-            return
-        try:
-            stage, name = reference.split(".")
-            settings = normalized_flow[stage][name]
-        except (ValueError, KeyError):
-            raise ConfigError(f"Unknown prerequisite flow: {reference}")
-        visiting.add(reference)
-        prerequisite = settings.get("requires")
-        if prerequisite:
-            visit(prerequisite)
-            parent_stage, parent_name = prerequisite.split(".")
-            if not set(settings["technologies"]) <= set(
-                normalized_flow[parent_stage][parent_name]["technologies"]
-            ):
-                raise ConfigError("Dependent flows require matching technologies")
-        visiting.remove(reference)
-        visited.add(reference)
-
-    for stage, tools in normalized_flow.items():
-        for name in tools:
-            visit(f"{stage}.{name}")
     workflow = raw.get("workflow", {})
     reject_unknown(workflow, {"stages"}, "workflow")
     stages = string_list(workflow.get("stages", []), "workflow.stages")
@@ -437,6 +417,20 @@ def load_config(config_path, project_root, *, action=None):
         for settings in tools.values():
             invoke(settings, "configure", config, settings, project_root)
     return config
+
+
+def flow_reference(reference):
+    if not isinstance(reference, str):
+        raise ConfigError("requires: expected stage.backend[.variant]")
+    parts = reference.split(".")
+    if (
+        len(parts) not in (2, 3)
+        or not all(parts)
+        or not all(IDENTIFIER.fullmatch(part) for part in parts[:2])
+        or (len(parts) == 3 and not re.fullmatch(r"[A-Za-z0-9_-]+", parts[2]))
+    ):
+        raise ConfigError("requires: expected stage.backend[.variant]")
+    return parts[0], parts[1], parts[2] if len(parts) == 3 else None
 
 
 def config_digest(config):

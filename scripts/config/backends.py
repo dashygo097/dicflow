@@ -2,6 +2,9 @@
 
 BACKEND declares tool/version_args, Bender format/source, commands, outputs,
 input globs, technology_inputs, tracked_environment and environment templates.
+outputs may map artifact roles to path templates (legacy path lists still work).
+input_roles binds local aliases to a prerequisite's roles through STAGE_INPUT_*
+environment variables. The existing run manifest records role paths and hashes.
 views maps stable editor filenames to declared output templates. The driver
 publishes these separately from each build's cache and artifact checksums.
 generated_sources declares native Bender groups relative to build/generated;
@@ -15,6 +18,7 @@ inherit_targets=True uses the prerequisite's source targets (e.g. equivalence).
 
 Optional hooks:
   configure(config, settings, root): validate/normalize backend-owned settings.
+  prerequisites(settings): backend/variant dependency references before normalization.
   variants(config, settings): optional {name: settings} for independent executions.
     Return None for one execution, or an empty mapping for no selected executions.
   generate(config, settings, root): shared generated files, relative to build/generated.
@@ -100,6 +104,15 @@ def load_backend(root, stage, name, settings):
     if any(key.startswith("_") for key in settings):
         raise ConfigError("Backend keys starting with '_' are reserved")
     resolved = {**defaults, **settings}
+    input_roles = description.get("input_roles", {})
+    if not isinstance(input_roles, dict) or any(
+        not isinstance(alias, str)
+        or not alias.isidentifier()
+        or not isinstance(role, str)
+        or not role
+        for alias, role in input_roles.items()
+    ):
+        raise ConfigError("backend input_roles: expected alias-to-role mapping")
     prerequisite = resolved.get("requires")
     if prerequisite is not None and (
         not isinstance(prerequisite, str) or not prerequisite
@@ -117,6 +130,10 @@ def load_backend(root, stage, name, settings):
     for key in ("commands", "outputs"):
         value = resolved.get(key, description.get(key))
         if key == "outputs":
+            if isinstance(value, dict):
+                if any(not isinstance(role, str) or not role for role in value):
+                    raise ConfigError("backend outputs: expected named artifact roles")
+                value = list(value.values())
             if not string_list(value, "backend outputs"):
                 raise ConfigError("backend outputs: expected at least one artifact")
         elif not isinstance(value, list) or not value:
@@ -244,7 +261,10 @@ def declared_outputs(
     values = context(config, entry, root, stage_dir, inputs, input_digest)
     key = "run_outputs" if run else "outputs"
     patterns = entry["settings"].get(key, entry["settings"]["_backend"].get(key, []))
-    paths = [Path(expand(pattern, values)) for pattern in patterns]
+    paths = [
+        Path(expand(pattern, values))
+        for pattern in (patterns.values() if isinstance(patterns, dict) else patterns)
+    ]
     for path in paths:
         if not path.resolve().is_relative_to(stage_dir.resolve()):
             raise ConfigError(
@@ -255,6 +275,18 @@ def declared_outputs(
     return paths
 
 
+def named_outputs(config, entry, root, stage_dir, inputs, input_digest):
+    patterns = entry["settings"].get(
+        "outputs", entry["settings"]["_backend"].get("outputs", [])
+    )
+    if not isinstance(patterns, dict):
+        return {}
+    values = context(config, entry, root, stage_dir, inputs, input_digest)
+    return {
+        role: str(Path(expand(pattern, values))) for role, pattern in patterns.items()
+    }
+
+
 def technology_inputs(technology, selectors):
     def leaves(value):
         if isinstance(value, dict):
@@ -263,12 +295,17 @@ def technology_inputs(technology, selectors):
             return [path for item in value for path in leaves(item)]
         return [value] if isinstance(value, str) else []
 
+    catalog = technology.get("libraries", {})
+    if not isinstance(catalog, dict) or any(
+        not isinstance(path, str) or not path for path in catalog.values()
+    ):
+        raise ConfigError("technology.libraries: expected named file paths")
     result = []
     for selector in selectors:
         value = technology
         for key in selector.split("."):
             value = value.get(key, {}) if isinstance(value, dict) else {}
-        result.extend(leaves(value))
+        result.extend(catalog.get(path, path) for path in leaves(value))
     return result
 
 
