@@ -1,7 +1,7 @@
 """Shared SDC configuration generator, independent of design and EDA backend."""
 
+from backends import tcl_value
 from project_config import (
-    IDENTIFIER,
     ConfigError,
     config_digest,
     header,
@@ -31,8 +31,6 @@ def normalize_clock(clock, location, *, virtual):
         location,
     )
     name = require_string(clock, "name", location)
-    if not IDENTIFIER.match(name):
-        raise ConfigError(f"{location}.name: expected an identifier")
     period = number(clock.get("period"), f"{location}.period", positive=True)
     waveform = clock.get("waveform", [0.0, period / 2.0])
     if not isinstance(waveform, list) or len(waveform) != 2:
@@ -168,17 +166,8 @@ def normalize_constraints(raw):
     }
 
 
-def tcl_braced(value):
-    value = str(value)
-    if "{" in value or "}" in value or "\n" in value or "\r" in value:
-        raise ConfigError(
-            f"value cannot be represented safely in generated Tcl: {value!r}"
-        )
-    return "{" + value + "}"
-
-
 def tcl_list(values):
-    return "[list " + " ".join(tcl_braced(value) for value in values) + "]"
+    return tcl_value(list(values))
 
 
 def format_number(value):
@@ -206,7 +195,7 @@ def render_constraints_sdc(config, digest):
         waveform = " ".join(format_number(value) for value in clock["waveform"])
         if clock["virtual"]:
             lines.append(
-                f"create_clock -name {tcl_braced(name)} -period {period} "
+                f"create_clock -name {tcl_value(name)} -period {period} "
                 f"-waveform {{{waveform}}}"
             )
         else:
@@ -214,9 +203,9 @@ def render_constraints_sdc(config, digest):
                 [
                     f"set project_clock_port [get_ports -quiet {tcl_list([name])}]",
                     "if {[sizeof_collection $project_clock_port] != 1} {",
-                    f"  error {tcl_braced('physical clock must resolve to exactly one port: ' + name)}",
+                    f"  error {tcl_value('physical clock must resolve to exactly one port: ' + name)}",
                     "}",
-                    f"create_clock -name {tcl_braced(name)} -period {period} "
+                    f"create_clock -name {tcl_value(name)} -period {period} "
                     f"-waveform {{{waveform}}} $project_clock_port",
                     "unset project_clock_port",
                 ]
@@ -243,7 +232,7 @@ def render_constraints_sdc(config, digest):
             ports = tcl_list(entry["ports"])
             context = f"{kind}_delays: {', '.join(entry['ports'])}"
             lines.append(
-                f"set project_ports [project_require_ports {ports} {tcl_braced(context)}]"
+                f"set project_ports [project_require_ports {ports} {tcl_value(context)}]"
             )
             for bound in ("max", "min"):
                 if bound in entry:
@@ -257,7 +246,7 @@ def render_constraints_sdc(config, digest):
         ports = tcl_list(entry["ports"])
         context = f"input_transitions: {', '.join(entry['ports'])}"
         lines.append(
-            f"set project_ports [project_require_ports {ports} {tcl_braced(context)}]"
+            f"set project_ports [project_require_ports {ports} {tcl_value(context)}]"
         )
         for edge in ("rise", "fall"):
             if edge in entry:
@@ -271,7 +260,7 @@ def render_constraints_sdc(config, digest):
         context = f"output_loads: {', '.join(entry['ports'])}"
         lines.extend(
             [
-                f"set project_ports [project_require_ports {ports} {tcl_braced(context)}]",
+                f"set project_ports [project_require_ports {ports} {tcl_value(context)}]",
                 f"set_load {format_number(entry['capacitance'])} $project_ports",
                 "unset project_ports",
             ]
