@@ -152,7 +152,18 @@ proc project_main {} {
     lappend elaborate_command -parameters [join $parameters ,]
   }
   eval $elaborate_command
+  # Parameter overrides can give the elaborated design a tool-generated name.
+  # Keep the selected specialization, with the configured name for all exports.
+  set elaborated_top [get_object_name [current_design]]
+  if {$elaborated_top ne $RTL_TOP} {
+    if {![rename_design $elaborated_top $RTL_TOP]} {
+      error "failed to rename elaborated design $elaborated_top as $RTL_TOP"
+    }
+  }
   current_design $RTL_TOP
+  if {[get_object_name [current_design]] ne $RTL_TOP} {
+    error "failed to select elaborated design as: $RTL_TOP"
+  }
   if {![link]} {
     error "failed to link design: $RTL_TOP"
   }
