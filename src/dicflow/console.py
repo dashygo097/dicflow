@@ -13,6 +13,7 @@ COLORS = {
     "INFO": "36",
     "WARNING": "33",
     "INCOMPLETE": "33",
+    "INTERRUPTED": "33",
 }
 TONES = {"accent": "36", "brand": "35", "muted": "90", "error": "31"}
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")

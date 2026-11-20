@@ -7,7 +7,6 @@ import os
 import re
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -20,6 +19,7 @@ from . import bender, extensions, generators
 from .backends import commands, context, declared_outputs
 from .backends import environment as backend_environment
 from .backends import invoke, named_outputs, technology_inputs
+from .processes import run_scheduler, stop_group
 from .project_config import (
     ConfigError,
     atomic_write,
@@ -695,6 +695,11 @@ def prepare(config, update=False, stages=None):
             "framework": {
                 "package": "dicflow",
                 "path": os.environ["PROJECT_FRAMEWORK_ROOT"],
+                "source": os.environ.get("PROJECT_FRAMEWORK_SOURCE", "locked"),
+                "locked_path": os.environ.get(
+                    "PROJECT_LOCKED_FRAMEWORK_ROOT",
+                    os.environ["PROJECT_FRAMEWORK_ROOT"],
+                ),
             },
         },
     )
@@ -803,8 +808,7 @@ def stream_command(argv, cwd, environment, log):
             log.write(plain(line))
         return child.wait()
     except BaseException:
-        os.killpg(child.pid, signal.SIGTERM)
-        child.wait()
+        stop_group(child)
         raise
     finally:
         child.stdout.close()
@@ -882,6 +886,7 @@ def execute(snapshot_path, run=False):
     artifacts = {}
     succeeded = False
     emit("RUNNING", outputs.label(entry), suffix="run" if run else "build")
+    detail("log", stage_path(entry).parent / "latest/logs/run.log")
     with (directory / "logs/run.log").open("w") as log:
         try:
             if snapshot["configuration_digest"] != config_digest(
@@ -1014,8 +1019,9 @@ def execute(snapshot_path, run=False):
                 succeeded = True
         except (Exception, KeyboardInterrupt, SystemExit) as exception:
             status = 130 if isinstance(exception, KeyboardInterrupt) else 1
-            error = str(exception)
-            emit("ERROR", error, stream=sys.stderr)
+            error = "Interrupted" if status == 130 else str(exception)
+            if status != 130:
+                emit("ERROR", error, stream=sys.stderr)
             log.write("ERROR: " + error + "\n")
         finally:
             if not succeeded and status == 0:
@@ -1028,11 +1034,14 @@ def execute(snapshot_path, run=False):
                 shutil.copyfile(
                     directory / "logs/run.log", directory / "reports/summary.rpt"
                 )
+            outcome = "passed" if status == 0 else "failed"
+            if status == 130:
+                outcome = "interrupted"
             write_json(
                 directory / "run.json",
                 {
                     "schema_version": 2,
-                    "status": "passed" if status == 0 else "failed",
+                    "status": outcome,
                     "exit_code": status,
                     "started_epoch": started,
                     "finished_epoch": time.time(),
@@ -1064,12 +1073,13 @@ def execute(snapshot_path, run=False):
             if status == 0 and not run:
                 atomic_write(stamp, snapshot["input_digest"] + "\n")
     outputs.finish(ROOT, entry, directory, status == 0)
+    if status == 130:
+        return status
     emit(
         "PASSED" if status == 0 else "FAILED",
         outputs.label(entry),
         suffix=f"{time.time() - started:.1f}s",
     )
-    detail("log", stage_path(entry).parent / "latest/logs/run.log")
     if status and not verbose():
         failure_tail(directory / "logs/run.log")
     return status
@@ -1093,6 +1103,7 @@ def main():
             return execute(args.input, args.action == "execute-run")
         (ROOT / "build").mkdir(exist_ok=True)
         with project_lock(ROOT):
+            emit("INFO", "Preparing " + args.action)
             config = load_config(ROOT / "Project.toml", ROOT, action=args.action)
             check_framework(config)
             action = args.action.removesuffix("-build")
@@ -1134,7 +1145,7 @@ def main():
                 emit("INFO", "No workflow stages configured")
             for goal in goals:
                 try:
-                    status = subprocess.call(
+                    status = run_scheduler(
                         [
                             os.environ.get("PROJECT_MAKE", "make"),
                             "--no-print-directory",
@@ -1153,6 +1164,9 @@ def main():
                 if status:
                     return status
             return 0
+    except KeyboardInterrupt:
+        emit("WARNING", "Interrupted", stream=sys.stderr)
+        return 130
     except (ConfigError, OSError, ValueError, subprocess.SubprocessError) as error:
         emit("ERROR", str(error), stream=sys.stderr)
         return 1

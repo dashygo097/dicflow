@@ -9,8 +9,30 @@ import sys
 import tomllib
 from pathlib import Path
 
-from .console import emit
+from .console import detail, emit, verbose
 from .filesystem import project_lock
+
+# Released in 4c7b2a5: workers reacquire the scheduler's project lock. Match the
+# exact defective entry, rather than guessing compatibility from version names.
+DEADLOCKING_WORKER_SHA256 = (
+    "18657cddeefb60b59bf16af70183e6225c8d4452c9f6a4b79cfbe84924be7c1f"
+)
+
+
+def engine_entry(directory):
+    worker = directory / "src/dicflow/engine/__main__.py"
+    if worker.is_file():
+        if hashlib.sha256(worker.read_bytes()).hexdigest() == DEADLOCKING_WORKER_SHA256:
+            raise RuntimeError(
+                f"Engine at {directory} contains the known worker-lock deadlock. "
+                "Select a fixed revision with dicflow deps update after publishing it, "
+                "or use --engine /path/to/fixed/dicflow for local development."
+            )
+        return worker
+    legacy = directory / "scripts/config/entry.py"
+    if legacy.is_file():
+        return legacy
+    raise RuntimeError(f"No compatible engine at {directory}; run dicflow deps update")
 
 
 def remove_tree(path):
@@ -37,10 +59,15 @@ def clean(root, *, entire):
     if entire:
         emit("INFO", "build/ removed; configuration and package metadata preserved")
     else:
-        emit("INFO", "Flow outputs removed; configuration, environment and lock preserved")
+        emit(
+            "INFO",
+            "Flow outputs removed; configuration, environment and lock preserved",
+        )
 
 
 def bender(root, *arguments):
+    if verbose():
+        emit("INFO", "bender " + " ".join(arguments))
     environment = {
         key: value for key, value in os.environ.items() if not key.startswith("BENDER_")
     }
@@ -56,7 +83,7 @@ def bender(root, *arguments):
     return result.stdout.strip()
 
 
-def settings_for(root):
+def settings_for(root, *, engine_override=False):
     configuration = root / "Project.toml"
     if not configuration.is_file():
         raise RuntimeError(
@@ -64,6 +91,10 @@ def settings_for(root):
         )
     with configuration.open("rb") as stream:
         project = tomllib.load(stream)
+    if engine_override and project.get("build", {}).get("reproducible", False):
+        raise RuntimeError(
+            "--engine is a development override and cannot be used with build.reproducible"
+        )
     if "framework" in project:
         raise RuntimeError("Remove [framework]; declare dicflow as a Bender dependency")
     settings = project.get("bender", {})
@@ -79,7 +110,7 @@ def settings_for(root):
     return settings
 
 
-def main(arguments=None):
+def main(arguments=None, *, engine=None):
     arguments = sys.argv[1:] if arguments is None else arguments
     action = arguments[0] if arguments else "help"
     root = Path(os.environ.get("PROJECT_ROOT", os.getcwd())).resolve()
@@ -99,7 +130,16 @@ def main(arguments=None):
     manifest = root / "Bender.yml"
     if not manifest.is_file():
         raise RuntimeError("Dependencies must be declared in the repository Bender.yml")
-    settings = {} if updating else settings_for(root)
+    if updating and engine is not None:
+        raise RuntimeError(
+            "--engine selects an execution engine; omit it for dependency updates"
+        )
+    settings = (
+        {} if updating else settings_for(root, engine_override=engine is not None)
+    )
+    emit(
+        "INFO", "Updating dependencies" if updating else "Resolving locked dependencies"
+    )
     if (
         settings.get("version")
         and bender(root, "--version") != "bender " + settings["version"]
@@ -119,6 +159,7 @@ def main(arguments=None):
             if json.loads(bender(root, "config")).get("overrides"):
                 raise RuntimeError("Bender overrides bypass the dependency declaration")
             locked = lock.read_bytes()
+            emit("INFO", "Checking out locked packages")
             bender(root, "checkout")
             if lock.read_bytes() != locked:
                 raise RuntimeError("Ordinary checkout changed Bender.lock")
@@ -127,14 +168,16 @@ def main(arguments=None):
                     "Bender.yml changed during dependency resolution; rerun the command"
                 )
             if not updating:
-                directory = Path(bender(root, "path", "dicflow")).resolve()
-                entry = directory / "src/dicflow/engine/__main__.py"
-                if not entry.is_file():
-                    entry = directory / "scripts/config/entry.py"
-                if not entry.is_file():
-                    raise RuntimeError(
-                        "Locked dicflow lacks bootstrap API 2; run dicflow deps update"
-                    )
+                locked_directory = Path(bender(root, "path", "dicflow")).resolve()
+                directory = engine.resolve() if engine is not None else locked_directory
+                emit(
+                    "INFO",
+                    "Using development engine override"
+                    if engine is not None
+                    else "Using locked engine",
+                )
+                detail("engine", directory)
+                entry = engine_entry(directory)
         except BaseException:
             if previous is None:
                 if lock.exists():
@@ -143,12 +186,17 @@ def main(arguments=None):
                 lock.write_bytes(previous)
             raise
     if updating:
-        emit("INFO", "Bender dependencies updated; Bender.lock records resolved revisions")
+        emit(
+            "INFO",
+            "Bender dependencies updated; Bender.lock records resolved revisions",
+        )
         return
     environment = dict(
         os.environ,
         PROJECT_ROOT=str(root),
         PROJECT_FRAMEWORK_ROOT=str(directory),
+        PROJECT_FRAMEWORK_SOURCE="override" if engine is not None else "locked",
+        PROJECT_LOCKED_FRAMEWORK_ROOT=str(locked_directory),
         PROJECT_BOOTSTRAP_API="2",
         PROJECT_BOOTSTRAP_LOCK=hashlib.sha256(locked).hexdigest(),
         PYTHONDONTWRITEBYTECODE="1",

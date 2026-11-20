@@ -1,4 +1,4 @@
-"""Public CLI; project builds always use the Bender-locked framework revision."""
+"""Public CLI; builds use the locked framework unless explicitly overridden."""
 
 import argparse
 import os
@@ -12,6 +12,12 @@ from .help import ArgumentParser
 
 
 def common_options(parser):
+    parser.add_argument(
+        "--engine",
+        type=Path,
+        default=argparse.SUPPRESS,
+        help="use a local dicflow checkout for development (does not change Bender.lock)",
+    )
     parser.add_argument(
         "--root",
         type=Path,
@@ -119,7 +125,7 @@ def dispatch(args):
     action = args.stage if args.command == "run" else args.command
     if args.command == "deps":
         action = "deps-update"
-    bootstrap.main([action])
+    bootstrap.main([action], engine=getattr(args, "engine", None))
     return 0
 
 
@@ -140,7 +146,7 @@ def main(argv=None):
     try:
         return dispatch(args)
     except KeyboardInterrupt:
-        emit("ERROR", "Interrupted", stream=sys.stderr)
+        emit("WARNING", "Interrupted", stream=sys.stderr)
         return 130
     except (OSError, ValueError, RuntimeError) as error:
         emit("ERROR", str(error), stream=sys.stderr)

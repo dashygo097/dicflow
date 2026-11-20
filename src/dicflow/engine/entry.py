@@ -34,7 +34,7 @@ def main():
     try:
         return run()
     except KeyboardInterrupt:
-        emit("ERROR", "Interrupted", stream=sys.stderr)
+        emit("WARNING", "Interrupted", stream=sys.stderr)
         return 130
     except (ConfigError, OSError, ValueError, RuntimeError) as error:
         emit("ERROR", str(error), stream=sys.stderr)

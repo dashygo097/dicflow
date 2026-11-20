@@ -10,7 +10,17 @@ from pathlib import Path
 @contextmanager
 def project_lock(root):
     with (root / ".project.lock").open("a") as mutex:
-        fcntl.flock(mutex, fcntl.LOCK_EX)
+        try:
+            fcntl.flock(mutex, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            from .console import emit
+
+            emit(
+                "INFO",
+                "Waiting for another dicflow command to release "
+                + str(root / ".project.lock"),
+            )
+            fcntl.flock(mutex, fcntl.LOCK_EX)
         yield
 
 
