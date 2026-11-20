@@ -15,7 +15,7 @@ import uuid
 from pathlib import Path
 
 from .. import outputs
-from ..console import emit, failure_tail, plain, verbose
+from ..console import detail, emit, failure_tail, plain, verbose
 from . import bender, extensions, generators
 from .backends import commands, context, declared_outputs
 from .backends import environment as backend_environment
@@ -881,7 +881,7 @@ def execute(snapshot_path, run=False):
     result_commands = []
     artifacts = {}
     succeeded = False
-    emit("RUNNING", outputs.label(entry) + (" (run)" if run else " (build)"))
+    emit("RUNNING", outputs.label(entry), suffix="run" if run else "build")
     with (directory / "logs/run.log").open("w") as log:
         try:
             if snapshot["configuration_digest"] != config_digest(
@@ -1066,9 +1066,10 @@ def execute(snapshot_path, run=False):
     outputs.finish(ROOT, entry, directory, status == 0)
     emit(
         "PASSED" if status == 0 else "FAILED",
-        f"{outputs.label(entry)} ({time.time() - started:.1f}s)",
+        outputs.label(entry),
+        suffix=f"{time.time() - started:.1f}s",
     )
-    print(f"  Log: {stage_path(entry).parent}/latest/logs/run.log", flush=True)
+    detail("log", stage_path(entry).parent / "latest/logs/run.log")
     if status and not verbose():
         failure_tail(directory / "logs/run.log")
     return status

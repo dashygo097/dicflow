@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 
-from .console import emit, plain
+from .console import detail, emit, heading, note, plain
 from .filesystem import atomic_write as write
 
 
@@ -143,24 +143,30 @@ def show(root, action="status", selector="", *, json_output=False):
         print(json.dumps(items, indent=2, sort_keys=True))
         return 0
     if not items:
+        heading(root.name, action)
         emit("INFO", "No matching executions recorded.")
         return 0
-    emit("INFO", "Recorded outcomes; current-input freshness has not been checked.")
+    noun = "execution" if len(items) == 1 else "executions"
+    heading(root.name, f"{len(items)} recorded {noun}")
+    note("Results are recorded; current inputs have not been checked.")
+    print()
     for item in items:
         emit(
             item["status"].upper(),
-            f"{item['execution']} ({item['duration_seconds']:.1f}s)",
+            item["execution"],
+            suffix="unfinished" if item["status"] == "incomplete"
+            else f"{item['duration_seconds']:.1f}s",
         )
         if action == "artifacts":
             for role, path in sorted(item["output_roles"].items()):
-                print(f"  {role}: {path}")
+                detail(role, path)
             named = set(item["output_roles"].values())
             for path in sorted(set(item["artifacts"]) - named):
-                print(f"  {path}")
+                detail("artifact", path)
         elif action == "logs":
-            print(f"  {root / item['log']}")
+            detail("log", root / item["log"])
         else:
-            print(f"  {item['directory']}")
+            detail("outputs", item["directory"])
             if item["error"]:
-                print("  Reason: " + plain(item["error"]))
+                detail("reason", item["error"])
     return 0

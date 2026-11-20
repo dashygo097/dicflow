@@ -8,6 +8,7 @@ from pathlib import Path
 
 from . import bootstrap, outputs
 from .console import emit
+from .help import ArgumentParser
 
 
 def common_options(parser):
@@ -32,24 +33,32 @@ def common_options(parser):
 
 
 def parser_for_cli():
-    parser = argparse.ArgumentParser(
-        prog="dicflow", description="Run and inspect retargetable hardware workflows."
+    parser = ArgumentParser(
+        prog="dicflow",
+        description="Run and inspect retargetable hardware workflows.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Examples:\n  dicflow run synth\n  dicflow status\n"
+        "  dicflow logs functional_hold\n  dicflow --root ../discv run sim",
     )
     common_options(parser)
     parser.add_argument(
         "--version", action="version", version=f"dicflow {version('dicflow')}"
     )
-    commands = parser.add_subparsers(dest="command", metavar="COMMAND")
+    commands = parser.add_subparsers(
+        dest="command", metavar="COMMAND", title="Commands"
+    )
 
     def command(name, help_text):
         child = commands.add_parser(name, help=help_text, description=help_text)
         common_options(child)
         return child
 
-    for name in ("status", "artifacts", "logs"):
-        child = command(
-            name, f"Inspect recorded {name} offline; freshness is not checked"
-        )
+    for name, description in {
+        "status": "Show recorded build outcomes",
+        "artifacts": "Find generated artifacts and reports",
+        "logs": "Find execution logs",
+    }.items():
+        child = command(name, description)
         child.add_argument(
             "selector",
             nargs="?",
@@ -115,6 +124,14 @@ def dispatch(args):
 
 
 def main(argv=None):
+    # Help exits during parsing, before dispatch. Resolve its style policy first,
+    # allowing --color before or after a command without altering parsed values.
+    argv = sys.argv[1:] if argv is None else argv
+    appearance = ArgumentParser(prog="dicflow", add_help=False)
+    appearance.add_argument("--color", choices=["auto", "always", "never"])
+    options, _ = appearance.parse_known_args(argv)
+    if options.color:
+        os.environ["DICFLOW_COLOR"] = options.color
     parser = parser_for_cli()
     args = parser.parse_args(argv)
     if args.command is None:
