@@ -11,6 +11,7 @@ import re
 import tomllib
 from pathlib import Path
 
+from .. import SCHEMA_VERSION
 from ..filesystem import atomic_write, project_lock
 
 
@@ -182,9 +183,9 @@ def generator_names(config, settings):
 def load_config(config_path, project_root, *, action=None):
     with config_path.open("rb") as stream:
         raw = tomllib.load(stream)
-    if raw.get("schema_version") != 7:
+    if raw.get("schema_version") != SCHEMA_VERSION:
         raise ConfigError(
-            "schema_version: expected 7; move top to [design] and declare project generators"
+            f"schema_version: expected {SCHEMA_VERSION}; move top to [design] and declare project generators"
         )
     if "framework" in raw:
         raise ConfigError(
@@ -380,7 +381,7 @@ def load_config(config_path, project_root, *, action=None):
         if stage not in normalized_flow or not normalized_flow[stage]:
             raise ConfigError(f"Workflow stage has no backend: {stage}")
     config = {
-        "schema_version": 7,
+        "schema_version": SCHEMA_VERSION,
         "design": design,
         "bender": bender,
         "build": build,

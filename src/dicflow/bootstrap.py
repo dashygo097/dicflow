@@ -87,7 +87,7 @@ def settings_for(root, *, engine_override=False):
     configuration = root / "Project.toml"
     if not configuration.is_file():
         raise RuntimeError(
-            "Project.toml is required for this workflow; run dicflow init"
+            "Project.toml is required for this workflow; run dicflow init --template PATH"
         )
     with configuration.open("rb") as stream:
         project = tomllib.load(stream)

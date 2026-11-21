@@ -7,7 +7,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 from . import bootstrap, outputs
-from .console import emit, relative_path
+from .console import emit
 from .help import ArgumentParser
 
 
@@ -42,7 +42,8 @@ def parser_for_cli():
     parser = ArgumentParser(
         prog="dicflow",
         description="Run and inspect retargetable hardware workflows.",
-        epilog="Examples:\n  dicflow run synth\n  dicflow status\n"
+        epilog="Examples:\n  dicflow init --template templates/alu.toml\n"
+        "  dicflow run synth\n  dicflow status\n"
         "  dicflow logs functional_hold\n  dicflow --root ../discv run sim",
     )
     common_options(parser)
@@ -74,7 +75,24 @@ def parser_for_cli():
             "--json", action="store_true", help="machine-readable records"
         )
 
-    command("init", "Create Project.toml from the project's template")
+    init = command("init", "Create Project.toml from an explicit TOML template")
+    init.add_argument(
+        "--template",
+        type=Path,
+        required=True,
+        metavar="PATH",
+        help="TOML template file, relative to the current directory",
+    )
+    init.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="validate and print the template without writing files",
+    )
+    init.add_argument(
+        "--force",
+        action="store_true",
+        help="replace an existing Project.toml (does not merge local edits)",
+    )
     deps = command("deps", "Manage locked Bender dependencies")
     deps_commands = deps.add_subparsers(dest="dependency_action", required=True)
     common_options(deps_commands.add_parser("update", help="Update Bender.lock"))
@@ -113,14 +131,9 @@ def dispatch(args):
     if args.command in {"status", "artifacts", "logs"}:
         return outputs.show(root, args.command, args.selector, json_output=args.json)
     if args.command == "init":
-        template = root / ".project.template.toml"
-        if not template.is_file():
-            raise RuntimeError(f"Project template is missing: {template}")
-        content = template.read_bytes()
-        with (root / "Project.toml").open("xb") as stream:
-            stream.write(content)
-        emit("INFO", "Created " + relative_path(root / "Project.toml", root))
-        return 0
+        from .initialization import initialize
+
+        return initialize(root, args.template, dry_run=args.dry_run, force=args.force)
     action = args.stage if args.command == "run" else args.command
     if args.command == "deps":
         action = "deps-update"
