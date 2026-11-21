@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 
 from .. import outputs
-from ..console import detail, emit, failure_tail, plain, verbose
+from ..console import detail, emit, failure_tail, plain, relative_path, verbose
 from . import bender, extensions, generators
 from .backends import commands, context, declared_outputs
 from .backends import environment as backend_environment
@@ -886,7 +886,7 @@ def execute(snapshot_path, run=False):
     artifacts = {}
     succeeded = False
     emit("RUNNING", outputs.label(entry), suffix="run" if run else "build")
-    detail("log", stage_path(entry).parent / "latest/logs/run.log")
+    detail("log", relative_path(stage_path(entry).parent / "latest/logs/run.log", ROOT))
     with (directory / "logs/run.log").open("w") as log:
         try:
             if snapshot["configuration_digest"] != config_digest(

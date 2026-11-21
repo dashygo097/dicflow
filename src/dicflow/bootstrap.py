@@ -9,7 +9,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from .console import detail, emit, verbose
+from .console import detail, emit, relative_path, verbose
 from .filesystem import project_lock
 
 # Released in 4c7b2a5: workers reacquire the scheduler's project lock. Match the
@@ -176,7 +176,7 @@ def main(arguments=None, *, engine=None):
                     if engine is not None
                     else "Using locked engine",
                 )
-                detail("engine", directory)
+                detail("engine", relative_path(directory, root))
                 entry = engine_entry(directory)
         except BaseException:
             if previous is None:

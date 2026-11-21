@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 
-from .console import detail, emit, heading, note, plain
+from .console import detail, emit, heading, note, plain, relative_path
 from .filesystem import atomic_write as write
 
 
@@ -154,17 +154,18 @@ def show(root, action="status", selector="", *, json_output=False):
         emit(
             item["status"].upper(),
             item["execution"],
-            suffix="unfinished" if item["status"] == "incomplete"
+            suffix="unfinished"
+            if item["status"] == "incomplete"
             else f"{item['duration_seconds']:.1f}s",
         )
         if action == "artifacts":
             for role, path in sorted(item["output_roles"].items()):
-                detail(role, path)
+                detail(role, relative_path(path, root))
             named = set(item["output_roles"].values())
             for path in sorted(set(item["artifacts"]) - named):
-                detail("artifact", path)
+                detail("artifact", relative_path(path, root))
         elif action == "logs":
-            detail("log", root / item["log"])
+            detail("log", item["log"])
         else:
             detail("outputs", item["directory"])
             if item["error"]:

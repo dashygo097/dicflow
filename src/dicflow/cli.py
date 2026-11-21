@@ -7,7 +7,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 from . import bootstrap, outputs
-from .console import emit
+from .console import emit, relative_path
 from .help import ArgumentParser
 
 
@@ -120,7 +120,7 @@ def dispatch(args):
         content = template.read_bytes()
         with (root / "Project.toml").open("xb") as stream:
             stream.write(content)
-        emit("INFO", "Created " + str(root / "Project.toml"))
+        emit("INFO", "Created " + relative_path(root / "Project.toml", root))
         return 0
     action = args.stage if args.command == "run" else args.command
     if args.command == "deps":

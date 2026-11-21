@@ -23,6 +23,18 @@ def plain(value):
     return ANSI.sub("", str(value))
 
 
+def relative_path(path, root):
+    """Format project-relative paths without resolving navigation symlinks."""
+    value = os.fspath(path)
+    if not os.path.isabs(value):
+        return value
+    try:
+        return os.path.relpath(value, root)
+    except ValueError:
+        # Paths on different Windows drives have no relative representation.
+        return value
+
+
 def supports_style(stream):
     """One policy for colors and text attributes, including help and errors."""
     mode = os.environ.get("DICFLOW_COLOR", "auto")
