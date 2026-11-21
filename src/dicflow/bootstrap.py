@@ -9,7 +9,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from .console import detail, emit, relative_path, verbose
+from .console import detail, emit, heading, relative_path, verbose
 from .filesystem import project_lock
 
 # Released in 4c7b2a5: workers reacquire the scheduler's project lock. Match the
@@ -137,6 +137,7 @@ def main(arguments=None, *, engine=None):
     settings = (
         {} if updating else settings_for(root, engine_override=engine is not None)
     )
+    heading("dicflow", f"{root.name} / {action}")
     emit(
         "INFO", "Updating dependencies" if updating else "Resolving locked dependencies"
     )
@@ -159,7 +160,8 @@ def main(arguments=None, *, engine=None):
             if json.loads(bender(root, "config")).get("overrides"):
                 raise RuntimeError("Bender overrides bypass the dependency declaration")
             locked = lock.read_bytes()
-            emit("INFO", "Checking out locked packages")
+            if verbose():
+                emit("INFO", "Checking out locked packages")
             bender(root, "checkout")
             if lock.read_bytes() != locked:
                 raise RuntimeError("Ordinary checkout changed Bender.lock")
@@ -170,13 +172,11 @@ def main(arguments=None, *, engine=None):
             if not updating:
                 locked_directory = Path(bender(root, "path", "dicflow")).resolve()
                 directory = engine.resolve() if engine is not None else locked_directory
-                emit(
-                    "INFO",
-                    "Using development engine override"
-                    if engine is not None
-                    else "Using locked engine",
+                detail(
+                    "engine",
+                    relative_path(directory, root)
+                    + (" (override)" if engine is not None else ""),
                 )
-                detail("engine", relative_path(directory, root))
                 entry = engine_entry(directory)
         except BaseException:
             if previous is None:

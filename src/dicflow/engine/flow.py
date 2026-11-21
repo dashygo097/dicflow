@@ -14,7 +14,14 @@ import uuid
 from pathlib import Path
 
 from .. import outputs
-from ..console import detail, emit, failure_tail, plain, relative_path, verbose
+from ..console import (
+    emit,
+    failure_tail,
+    plain,
+    relative_path,
+    stage_start,
+    verbose,
+)
 from . import bender, extensions, generators
 from .backends import commands, context, declared_outputs
 from .backends import environment as backend_environment
@@ -435,14 +442,14 @@ def prepare(config, update=False, stages=None):
     updates = {"generator:" + name: outputs for name, outputs in generated.items()}
     for entry in active:
         owner = "backend:" + entry["stage"] + ":" + entry["tool"]
-        outputs = (
+        generated_outputs = (
             invoke(entry["settings"], "generate", config, entry["settings"], ROOT) or {}
         )
-        if owner in updates and updates[owner] != outputs:
+        if owner in updates and updates[owner] != generated_outputs:
             raise ConfigError(
                 "Technology-dependent shared generator outputs must agree: " + owner
             )
-        updates[owner] = outputs
+        updates[owner] = generated_outputs
     generators.publish(
         ROOT, updates, config["_generation_owners"], complete=config["_complete"]
     )
@@ -885,8 +892,11 @@ def execute(snapshot_path, run=False):
     result_commands = []
     artifacts = {}
     succeeded = False
-    emit("RUNNING", outputs.label(entry), suffix="run" if run else "build")
-    detail("log", relative_path(stage_path(entry).parent / "latest/logs/run.log", ROOT))
+    stage_start(
+        outputs.label(entry),
+        relative_path(stage_path(entry).parent / "latest/logs/run.log", ROOT),
+        kind="run" if run else "build",
+    )
     with (directory / "logs/run.log").open("w") as log:
         try:
             if snapshot["configuration_digest"] != config_digest(
@@ -1103,7 +1113,8 @@ def main():
             return execute(args.input, args.action == "execute-run")
         (ROOT / "build").mkdir(exist_ok=True)
         with project_lock(ROOT):
-            emit("INFO", "Preparing " + args.action)
+            started = time.monotonic()
+            emit("PREPARING", args.action)
             config = load_config(ROOT / "Project.toml", ROOT, action=args.action)
             check_framework(config)
             action = args.action.removesuffix("-build")
@@ -1149,6 +1160,7 @@ def main():
                         [
                             os.environ.get("PROJECT_MAKE", "make"),
                             "--no-print-directory",
+                            "--silent",
                             "--keep-going",
                             "-f",
                             str(GENERATED / "build.mk"),
@@ -1163,6 +1175,12 @@ def main():
                     outputs.overview(ROOT)
                 if status:
                     return status
+            if goals:
+                emit(
+                    "DONE",
+                    args.action,
+                    suffix=f"{time.monotonic() - started:.1f}s total",
+                )
             return 0
     except KeyboardInterrupt:
         emit("WARNING", "Interrupted", stream=sys.stderr)

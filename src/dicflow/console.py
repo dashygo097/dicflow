@@ -1,21 +1,46 @@
-"""Dependency-free terminal presentation; never write ANSI escapes to log files."""
+"""Rich presentation for humans; structured output and saved logs stay plain."""
 
 import os
 import re
 import sys
+from functools import lru_cache
 
-COLORS = {
-    "PASSED": "32",
-    "FAILED": "31",
-    "ERROR": "31",
-    "RUNNING": "36",
-    "CACHED": "90",
-    "INFO": "36",
-    "WARNING": "33",
-    "INCOMPLETE": "33",
-    "INTERRUPTED": "33",
+from rich.console import Console, Group
+from rich.text import Text
+from rich.theme import Theme
+
+THEME = Theme(
+    {
+        "brand": "bold cyan",
+        "muted": "dim",
+        "note": "dim italic",
+        "PASSED": "bold green",
+        "FAILED": "bold red",
+        "ERROR": "bold red",
+        "RUNNING": "bold cyan",
+        "PREPARING": "dim italic",
+        "DONE": "bold green",
+        "CACHED": "dim",
+        "INFO": "dim",
+        "WARNING": "bold yellow",
+        "INCOMPLETE": "yellow",
+        "INTERRUPTED": "yellow",
+    }
+)
+LABELS = {
+    "PASSED": "PASS",
+    "FAILED": "FAIL",
+    "RUNNING": "RUN",
+    "PREPARING": "PREP",
+    "CACHED": "CACHE",
+    "WARNING": "WARN",
+    "INTERRUPTED": "STOP",
+    "INCOMPLETE": "PARTIAL",
 }
-TONES = {"accent": "36", "brand": "35", "muted": "90", "error": "31"}
+MARGIN = "  "
+LABEL_WIDTH = 7
+GAP = "  "
+CONTENT_INDENT = MARGIN + " " * LABEL_WIDTH + GAP
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
@@ -31,71 +56,92 @@ def relative_path(path, root):
     try:
         return os.path.relpath(value, root)
     except ValueError:
-        # Paths on different Windows drives have no relative representation.
         return value
 
 
 def supports_style(stream):
-    """One policy for colors and text attributes, including help and errors."""
     mode = os.environ.get("DICFLOW_COLOR", "auto")
     return mode == "always" or (
         mode == "auto"
         and "NO_COLOR" not in os.environ
-        and os.environ.get("TERM") != "dumb"
+        and os.environ.get("TERM") not in {"dumb", "unknown"}
         and stream.isatty()
     )
 
 
-def style(value, *, tone=None, bold=False, dim=False, italic=False, stream=None):
+@lru_cache(maxsize=8)
+def _console(stream, styled):
+    return Console(
+        file=stream,
+        theme=THEME,
+        force_terminal=styled,
+        force_jupyter=False,
+        force_interactive=False,
+        color_system="standard" if styled else None,
+        no_color=not styled,
+        markup=False,
+        highlight=False,
+        emoji=False,
+        soft_wrap=True,
+    )
+
+
+def get_console(stream=None):
     stream = stream or sys.stdout
-    text = plain(value)
-    if not supports_style(stream):
-        return text
-    codes = []
-    if bold:
-        codes.append("1")
-    if dim:
-        codes.append("2")
-    if italic:
-        codes.append("3")
-    if tone:
-        codes.append(TONES.get(tone, COLORS.get(tone, "39")))
-    return f"\033[{';'.join(codes)}m{text}\033[0m" if codes else text
+    return _console(stream, supports_style(stream))
+
+
+def _row(label, value, *, label_style="", value_style="", suffix=""):
+    """Use one label column; long extension labels get a line of their own."""
+    label = Text(plain(label), style=label_style)
+    line = Text(MARGIN)
+    line.append_text(label)
+    if label.cell_len > LABEL_WIDTH:
+        line.append("\n" + CONTENT_INDENT)
+    else:
+        line.append(" " * (LABEL_WIDTH - label.cell_len) + GAP)
+    line.append(plain(value), style=value_style)
+    if suffix:
+        line.append(GAP + plain(suffix), style="muted")
+    return line
 
 
 def heading(title, subtitle="", *, stream=None):
-    stream = stream or sys.stdout
-    line = "  " + style(title, tone="brand", bold=True, stream=stream)
-    if subtitle:
-        line += "  " + style(subtitle, dim=True, stream=stream)
-    print(line, file=stream, flush=True)
+    get_console(stream).print(
+        _row(title, subtitle, label_style="brand", value_style="muted")
+    )
 
 
 def note(message, *, stream=None):
-    stream = stream or sys.stdout
-    print("  " + style(message, dim=True, italic=True, stream=stream), file=stream)
+    get_console(stream).print(_row("", message, value_style="note"))
 
 
 def detail(label, value, *, stream=None):
-    stream = stream or sys.stdout
-    print(
-        " " * 13
-        + style(label + ":", dim=True, stream=stream)
-        + " "
-        + style(value, tone="accent", stream=stream),
-        file=stream,
-        flush=True,
+    get_console(stream).print(
+        _row(label, value, label_style="muted", value_style="muted")
+    )
+
+
+def _status(status, message, suffix=""):
+    return _row(
+        LABELS.get(status, status), message,
+        label_style=status if status in THEME.styles else "INFO", suffix=suffix,
     )
 
 
 def emit(status, message, *, stream=None, suffix=""):
-    stream = stream or sys.stdout
-    label = style(status.title().rjust(10), tone=status, bold=True, stream=stream)
-    line = f"  {label} {plain(message)}"
-    if suffix:
-        line += "  " + style(suffix, dim=True, stream=stream)
-    # A single write keeps parallel worker status lines together.
-    print(line, file=stream, flush=True)
+    get_console(stream).print(_status(status, message, suffix))
+
+
+def stage_start(message, log, *, kind="build"):
+    # Keep status and path together, with explicit line endings under Make/CI.
+    get_console().print(
+        Group(
+            Text(""),
+            _status("RUNNING", message, kind),
+            _row("log", log, label_style="muted", value_style="muted"),
+        )
+    )
 
 
 def verbose():
@@ -103,16 +149,10 @@ def verbose():
 
 
 def failure_tail(path, limit=12):
-    # EDA logs can be gigabytes. Bound both memory and I/O, not just line count.
     with path.open("rb") as source:
         source.seek(0, os.SEEK_END)
         source.seek(max(0, source.tell() - 65536))
         lines = source.read().decode("utf-8", errors="replace").splitlines()[-limit:]
-    for line in lines:
-        print(
-            " " * 13
-            + style("|", dim=True, stream=sys.stderr)
-            + " "
-            + plain(line.rstrip()),
-            file=sys.stderr,
-        )
+    get_console(sys.stderr).print(
+        Group(*(Text(CONTENT_INDENT + "| " + plain(line)) for line in lines))
+    )

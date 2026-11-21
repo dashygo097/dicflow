@@ -42,7 +42,6 @@ def parser_for_cli():
     parser = ArgumentParser(
         prog="dicflow",
         description="Run and inspect retargetable hardware workflows.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n  dicflow run synth\n  dicflow status\n"
         "  dicflow logs functional_hold\n  dicflow --root ../discv run sim",
     )
